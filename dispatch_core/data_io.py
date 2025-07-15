@@ -15,11 +15,7 @@ def load_data(cfg: RunConfig) -> pd.DataFrame:
 
     df = df.loc[cfg.start_date : cfg.end_date]
 
-    needed = ["Net Power - wind (MW)", "Net Power - solar (MW)", cfg.market_price_col]
-    missing = [c for c in needed if c not in df.columns]
-    if missing:
-        sys.exit(f"[data_io] Missing columns: {missing}")
-
+    # --- RENAME AND FILL BEFORE CHECKING ---
     col_map = {
         "Wind (MW)": "Net Power - wind (MW)",
         "Solar (MW)": "Net Power - solar (MW)",
@@ -28,5 +24,10 @@ def load_data(cfg: RunConfig) -> pd.DataFrame:
     for col in ["Net Power - wind (MW)", "Net Power - solar (MW)"]:
         if col not in df.columns:
             df[col] = 0.0
+
+    needed = ["Net Power - wind (MW)", "Net Power - solar (MW)", cfg.market_price_col]
+    missing = [c for c in needed if c not in df.columns]
+    if missing:
+        sys.exit(f"[data_io] Missing columns: {missing}")
 
     return df
