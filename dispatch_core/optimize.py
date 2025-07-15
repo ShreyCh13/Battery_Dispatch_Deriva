@@ -148,7 +148,7 @@ def run_lp(df: pd.DataFrame,
         grid_imp = res["grid_imp"].to_numpy(dtype=float)
         price_arr = res["price"].to_numpy(dtype=float)
         # Revenue: (Grid Export - Grid Import) * Price, no *1000
-        revenue_tot = ((grid_exp - grid_imp) * price_arr).sum()
+        revenue_tot = ((grid_exp - grid_imp) * price_arr).sum() / 1000
         # Green energy percent: total wind+solar / total load
         total_wind = float(df["Wind (MW)"].fillna(0).sum())
         total_solar = float(df["Solar (MW)"].fillna(0).sum())
@@ -161,7 +161,7 @@ def run_lp(df: pd.DataFrame,
         grid_exp = res["grid_exp"].to_numpy(dtype=float)
         grid_imp = res["grid_imp"].to_numpy(dtype=float)
         price_arr = res["price"].to_numpy(dtype=float)
-        revenue_tot = ((grid_exp - grid_imp) * price_arr).sum()
+        revenue_tot = ((grid_exp - grid_imp) * price_arr).sum() / 1000
         total_wind = float(df["Wind (MW)"].fillna(0).sum())
         total_solar = float(df["Solar (MW)"].fillna(0).sum())
         max_resilience = ((total_wind + total_solar) / demand) * 100 if demand > 0 else 0
@@ -301,7 +301,7 @@ def tradeoff_analysis(df, cfg, slack_list=None):
         prob2.solve(pulp.PULP_CBC_CMD(msg=False))
         served = sum(pulp.value(serve2[t]) for t in range(T))
         total_load = sum(load)
-        revenue = sum(price.iloc[t] * (pulp.value(dis2[t]) - pulp.value(chg2[t]) + gen.iloc[t]) for t in range(T))
+        revenue = sum(price.iloc[t] * (pulp.value(dis2[t]) - pulp.value(chg2[t]) + gen.iloc[t]) for t in range(T)) / 1000
         resilience_pct = served / total_load * 100.0
         results.append({'slack_%': int(slack*100), 'resilience_%': resilience_pct, 'served_MWh': served, 'revenue_$': revenue})
         # Save dispatch for this slack
