@@ -4,3 +4,5 @@ openpyxl
 pulp
 matplotlib
 plotly
+pydantic
+numpy
