@@ -7,8 +7,8 @@ import numpy as np
 def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title="Dispatch"):
     t = res.index
     # Extract individual sources
-    solar = res["Net Power - solar (MW)"] if "Net Power - solar (MW)" in res else pd.Series(0, index=t)
-    wind = res["Net Power - wind (MW)"] if "Net Power - wind (MW)" in res else pd.Series(0, index=t)
+    solar = res["Solar (MW)"] if "Solar (MW)" in res else pd.Series(0, index=t)
+    wind = res["Wind (MW)"] if "Wind (MW)" in res else pd.Series(0, index=t)
     battery1 = res["discharge1"] - res["charge1"] if "discharge1" in res and "charge1" in res else pd.Series(0, index=t)
     battery2 = res["discharge2"] - res["charge2"] if "discharge2" in res and "charge2" in res else pd.Series(0, index=t)
     grid = res["grid_exp"] - res["grid_imp"] if "grid_exp" in res and "grid_imp" in res else pd.Series(0, index=t)
@@ -90,10 +90,10 @@ def plot_dispatch_plotly(res, cfg, title="Dispatch (All Metrics)"):
     t = res.index
     fig = go.Figure()
     # Add traces for each available metric
-    if "Net Power - solar (MW)" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["Net Power - solar (MW)"], mode='lines', name='Solar', line=dict(color='yellow')))
-    if "Net Power - wind (MW)" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["Net Power - wind (MW)"], mode='lines', name='Wind', line=dict(color='orange')))
+    if "Solar (MW)" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["Solar (MW)"], mode='lines', name='Solar', line=dict(color='yellow')))
+    if "Wind (MW)" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["Wind (MW)"], mode='lines', name='Wind', line=dict(color='orange')))
     if "discharge1" in res and "charge1" in res:
         fig.add_trace(go.Scatter(x=t, y=res["discharge1"] - res["charge1"], mode='lines', name='Battery 1', line=dict(color='blue')))
     if "discharge2" in res and "charge2" in res:
@@ -115,7 +115,7 @@ def plot_dispatch_plotly(res, cfg, title="Dispatch (All Metrics)"):
         fig.add_trace(go.Scatter(x=t, y=[-POI]*len(t), mode='lines', name='POI limit', line=dict(color='red', dash='dash')))
     # Add any other time series columns
     for col in res.columns:
-        if col not in ["Net Power - solar (MW)", "Net Power - wind (MW)", "discharge1", "charge1", "discharge2", "charge2", "grid_exp", "grid_imp", "load", "price", "revenue_t", "clipped"]:
+        if col not in ["Solar (MW)", "Wind (MW)", "discharge1", "charge1", "discharge2", "charge2", "grid_exp", "grid_imp", "load", "price", "revenue_t", "clipped"]:
             if np.issubdtype(res[col].dtype, np.number):
                 fig.add_trace(go.Scatter(x=t, y=res[col], mode='lines', name=col))
     fig.update_layout(title=title, xaxis_title="Time", yaxis_title="Value (various units)", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))

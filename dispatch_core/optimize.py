@@ -23,7 +23,7 @@ def run_lp(df: pd.DataFrame,
     if mode == "blend":
         assert 0 <= blend_lambda <= 1, "λ must be 0–1"
 
-    gen   = df["Net Power - wind (MW)"].fillna(0) + df["Net Power - solar (MW)"].fillna(0)
+    gen   = df["Wind (MW)"].fillna(0) + df["Solar (MW)"].fillna(0)
     load  = generate(pd.DatetimeIndex(df.index), cfg)
     price = df[cfg.market_price_col]
 
@@ -150,8 +150,8 @@ def run_lp(df: pd.DataFrame,
         # Revenue: (Grid Export - Grid Import) * Price, no *1000
         revenue_tot = ((grid_exp - grid_imp) * price_arr).sum()
         # Green energy percent: total wind+solar / total load
-        total_wind = float(df["Net Power - wind (MW)"].fillna(0).sum())
-        total_solar = float(df["Net Power - solar (MW)"].fillna(0).sum())
+        total_wind = float(df["Wind (MW)"].fillna(0).sum())
+        total_solar = float(df["Solar (MW)"].fillna(0).sum())
         green_energy_pct = (total_wind + total_solar) / demand * 100 if demand > 0 else 0.0
         resilience_pct = 100.0
         max_resilience = green_energy_pct  # For grid ON, this is green energy %
@@ -162,8 +162,8 @@ def run_lp(df: pd.DataFrame,
         grid_imp = res["grid_imp"].to_numpy(dtype=float)
         price_arr = res["price"].to_numpy(dtype=float)
         revenue_tot = ((grid_exp - grid_imp) * price_arr).sum()
-        total_wind = float(df["Net Power - wind (MW)"].fillna(0).sum())
-        total_solar = float(df["Net Power - solar (MW)"].fillna(0).sum())
+        total_wind = float(df["Wind (MW)"].fillna(0).sum())
+        total_solar = float(df["Solar (MW)"].fillna(0).sum())
         max_resilience = ((total_wind + total_solar) / demand) * 100 if demand > 0 else 0
         resilience_pct = round(served / demand * 100, 2)
     total_charge = float(res["charge"].sum()) if "charge" in res else 0.0
@@ -224,7 +224,7 @@ def run_lp(df: pd.DataFrame,
             sanity_errors.append("Grid import/export nonzero when grid is off")
     # 5. serve never exceeds cumulative generation (over period)
     if not grid_allowed and mode != "grid_on_max_revenue":
-        if res["serve"].sum() > (df["Net Power - wind (MW)"].clip(lower=0).sum() + df["Net Power - solar (MW)"].clip(lower=0).sum()) + 1e-6:
+        if res["serve"].sum() > (df["Wind (MW)"].clip(lower=0).sum() + df["Solar (MW)"].clip(lower=0).sum()) + 1e-6:
             sanity_errors.append("Total served exceeds total available generation")
     sanity_check_passed = len(sanity_errors) == 0
     mets["sanity_check_passed"] = sanity_check_passed
@@ -243,7 +243,7 @@ def tradeoff_analysis(df, cfg, slack_list=None):
     if slack_list is None:
         slack_list = [0.00, 0.01, 0.02, 0.03, 0.05, 0.06, 0.07, 0.09]
     # --- Phase 1: Maximize resilience ---
-    gen = df["Net Power - wind (MW)"].fillna(0) + df["Net Power - solar (MW)"].fillna(0)
+    gen = df["Wind (MW)"].fillna(0) + df["Solar (MW)"].fillna(0)
     load = generate(pd.DatetimeIndex(df.index), cfg)
     price = df[cfg.market_price_col]
     T = len(df)
