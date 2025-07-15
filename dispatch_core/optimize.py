@@ -141,36 +141,20 @@ def run_lp(df: pd.DataFrame,
     res = res.loc[:, ~res.columns.str.contains('^Unnamed', na=False)]
 
     # Metrics calculation
-    if mode == "grid_on_max_revenue":
-        demand = res["load"].sum()
-        served = res["serve"].sum()  # already extracted as floats
-        grid_exp = res["grid_exp"].to_numpy(dtype=float)
-        grid_imp = res["grid_imp"].to_numpy(dtype=float)
-        price_arr = res["price"].to_numpy(dtype=float)
-        # Revenue: (Grid Export - Grid Import) * Price, no *1000
-        revenue_tot = ((grid_exp - grid_imp) * price_arr).sum() / 1000
-        # Green energy percent: total wind+solar / total load
-        total_wind = float(df["Wind (MW)"].fillna(0).sum())
-        total_solar = float(df["Solar (MW)"].fillna(0).sum())
-        green_energy_pct = (total_wind + total_solar) / demand * 100 if demand > 0 else 0.0
-        resilience_pct = 100.0
-        max_resilience = green_energy_pct  # For grid ON, this is green energy %
-    else:
-        demand = res["load"].sum()
-        served = res["serve"].sum()
-        grid_exp = res["grid_exp"].to_numpy(dtype=float)
-        grid_imp = res["grid_imp"].to_numpy(dtype=float)
-        price_arr = res["price"].to_numpy(dtype=float)
-        revenue_tot = ((grid_exp - grid_imp) * price_arr).sum() / 1000
-        total_wind = float(df["Wind (MW)"].fillna(0).sum())
-        total_solar = float(df["Solar (MW)"].fillna(0).sum())
-        max_resilience = ((total_wind + total_solar) / demand) * 100 if demand > 0 else 0
-        resilience_pct = round(served / demand * 100, 2)
+    total_load = float(res["load"].sum())
+    served = float(res["serve"].sum())
+    grid_exp = res["grid_exp"].to_numpy(dtype=float)
+    grid_imp = res["grid_imp"].to_numpy(dtype=float)
+    price_arr = res["price"].to_numpy(dtype=float)
+    revenue_tot = ((grid_exp - grid_imp) * price_arr).sum() / 1000
+    total_wind = float(df["Wind (MW)"].fillna(0).sum())
+    total_solar = float(df["Solar (MW)"].fillna(0).sum())
+    total_gen = total_wind + total_solar
+    green_gen_over_load_pct = (total_gen / total_load * 100) if total_load > 0 else 0.0
+    resilience_pct = round(served / total_load * 100, 2) if total_load > 0 else 0.0
     total_charge = float(res["charge"].sum()) if "charge" in res else 0.0
     total_clip = float(res["clipped"].sum()) if "clipped" in res else 0.0
-    total_gen = float(res["generation"].sum()) if "generation" in res else 0.0
-    total_load = float(demand)
-    total_served = float(served)
+    total_gen_mwh = float(res["generation"].sum()) if "generation" in res else 0.0
     capex = (
         cfg.capex_power_usd_per_kw  * cfg.battery_power_mw   * 1000 +
         cfg.capex_energy_usd_per_kwh* cfg.battery_energy_mwh * 1000 +
@@ -182,21 +166,20 @@ def run_lp(df: pd.DataFrame,
     discharge2_sum = float(res["discharge2"].sum()) if "discharge2" in res else 0.0
     cycles1 = discharge1_sum / float(cfg.battery_energy_mwh) if cfg.battery_energy_mwh > 0 else 0.0
     cycles2 = discharge2_sum / float(cfg.battery2_energy_mwh) if cfg.battery2_energy_mwh > 0 else 0.0
-    # Prepare all relevant arrays as float numpy arrays for metrics
-    charge_arr = res["charge"].to_numpy(dtype=float) if "charge" in res else np.zeros(T)
-    clipped_arr = res["clipped"].to_numpy(dtype=float) if "clipped" in res else np.zeros(T)
-    gen_arr = res["generation"].to_numpy(dtype=float) if "generation" in res else np.zeros(T)
+    charge_arr = res["charge"].to_numpy(dtype=float) if "charge" in res else np.zeros(len(res))
+    clipped_arr = res["clipped"].to_numpy(dtype=float) if "clipped" in res else np.zeros(len(res))
+    gen_arr = res["generation"].to_numpy(dtype=float) if "generation" in res else np.zeros(len(res))
     grid_imp_arr = res["grid_imp"].to_numpy(dtype=float)
     grid_exp_arr = res["grid_exp"].to_numpy(dtype=float)
     mets = {
         "resilience_pct": round(resilience_pct, 2),
-        "green_gen_over_load_pct": round(float(max_resilience), 2),  # For grid ON, this is green energy %
+        "green_gen_over_load_pct": round(float(green_gen_over_load_pct), 2),
         "revenue_$":      round(float(revenue_tot), 2),
         "total_charge_mwh": round(float(charge_arr.sum()), 2),
         "total_clip_mwh": round(float(clipped_arr.sum()), 2),
         "total_gen_mwh": round(float(gen_arr.sum()), 2),
         "total_load_mwh": round(total_load, 2),
-        "total_served_mwh": round(total_served, 2),
+        "total_served_mwh": round(served, 2),
         "grid_imp_mwh":   round(float(grid_imp_arr.sum()), 2),
         "grid_exp_mwh":   round(float(grid_exp_arr.sum()), 2),
         "capex_$":        round(float(capex)),
@@ -211,10 +194,7 @@ def run_lp(df: pd.DataFrame,
         sanity_errors.append("Battery 1 SOC out of bounds")
     if (res["soc2"].min() < -1e-6) or (res["soc2"].max() > cfg.battery2_energy_mwh + 1e-6):
         sanity_errors.append("Battery 2 SOC out of bounds")
-    # 2. max_resilience >= actual resilience
-    if not grid_allowed and mode != "grid_on_max_revenue":
-        if max_resilience + 1e-6 < (served / demand * 100):
-            sanity_errors.append("Actual resilience exceeds max possible resilience")
+    # 2. max_resilience >= actual resilience (removed, now always based on green_gen_over_load_pct)
     # 3. clipped always >= 0
     if (res["clipped"].min() < -1e-6):
         sanity_errors.append("Clipped energy negative")
