@@ -30,7 +30,7 @@ class RunConfig(BaseModel):
 
     # ── Economics ───────────────────────────────────────────────────────────
     value_per_mwh:            float = 100.0
-    market_price_col:         str   = "Market Price ($/kwh)"
+    market_price_col:         str   = "Market Price ($/MWh)"
     capex_power_usd_per_kw:   float = 200
     capex_energy_usd_per_kwh: float = 150
     discount_years:           int   = 20

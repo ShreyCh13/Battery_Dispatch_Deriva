@@ -69,7 +69,7 @@ def plot_grid(res: pd.DataFrame, cfg: RunConfig, title="Grid Charging/Dischargin
 def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title="Revenue Over Time"):
     t = res.index
     if "price" in res:
-        revenue = (res["grid_exp"] - res["grid_imp"]) * res["price"]  # $/h
+        revenue = ((res["grid_exp"] - res["grid_imp"]) * res["price"]) / 1000  # $/h
         fig, ax = plt.subplots(figsize=(14,5))
         ax.plot(t, revenue.cumsum(), label="Cumulative Revenue ($)", color="purple")
         ax.set_xlabel("Time"); ax.set_ylabel("Cumulative Revenue ($)")

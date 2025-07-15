@@ -144,6 +144,11 @@ else:
     user_df = user_df.set_index("Datetime")
     user_data_source = "template"
 
+# After loading user_df (template or upload), add a warning if market price values look like $/kWh
+if user_df is not None and "Market Price ($/MWh)" in user_df.columns:
+    if user_df["Market Price ($/MWh)"].max() < 10:
+        st.warning("Market price values look very low. Are you using $/kWh instead of $/MWh? All calculations assume $/MWh.")
+
 # Fallback: use synthetic if no valid upload
 def get_data_and_source():
     if user_df is not None:
@@ -313,6 +318,11 @@ except Exception as e:
     run_cfg = None
     df = None
 
+# --- FIX: Always override with synthetic load if the button is toggled ---
+if df is not None and run_cfg is not None and load_source.strip().lower().startswith("synthetic"):
+    from dispatch_core.profiles import generate
+    df["Load (MW)"] = generate(pd.DatetimeIndex(df.index), run_cfg)
+
 # ── main workflow ────────────────────────────────────────────
 if run and df is not None and run_cfg is not None:
     if grid_on:
@@ -352,7 +362,7 @@ if run and df is not None and run_cfg is not None:
         st.plotly_chart(fig_plotly, use_container_width=True)
         st.subheader("Grid Import/Export and Revenue Time Series")
         # Revenue time series
-        revenue_ts = (res["grid_exp"] * res["price"] - res["grid_imp"] * res["price"])  # $/h
+        revenue_ts = (res["grid_exp"] * res["price"] - res["grid_imp"] * res["price"]) / 1000  # $/h
         res["revenue_t"] = revenue_ts
         st.line_chart(revenue_ts, use_container_width=True)
         st.markdown(f"**Total Revenue:** ${revenue_ts.sum():,.2f}")
