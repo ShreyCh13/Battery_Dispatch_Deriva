@@ -20,4 +20,13 @@ def load_data(cfg: RunConfig) -> pd.DataFrame:
     if missing:
         sys.exit(f"[data_io] Missing columns: {missing}")
 
+    col_map = {
+        "Wind (MW)": "Net Power - wind (MW)",
+        "Solar (MW)": "Net Power - solar (MW)",
+    }
+    df.rename(columns=col_map, inplace=True)
+    for col in ["Net Power - wind (MW)", "Net Power - solar (MW)"]:
+        if col not in df.columns:
+            df[col] = 0.0
+
     return df
