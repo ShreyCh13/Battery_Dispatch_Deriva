@@ -57,7 +57,10 @@ def run_lp(
 
     # Prepare input series
     gen   = df["Wind (MW)"].fillna(0) + df["Solar (MW)"].fillna(0)
-    load  = generate(pd.DatetimeIndex(df.index), cfg)
+    if "Load (MW)" in df.columns:
+        load = df["Load (MW)"]
+    else:
+        load = generate(pd.DatetimeIndex(df.index), cfg)
     price = df[cfg.market_price_col]
 
     # Battery 1 parameters
@@ -148,7 +151,13 @@ def run_lp(
         raise RuntimeError(f"Solver failed: {pulp.LpStatus[prob.status]}")
 
     # ── Collect results ────────────────────────────────────────
-    arr = lambda var: np.array([pulp.value(var[t]) for t in range(T)])
+    def safe_value(x):
+        try:
+            v = pulp.value(x)
+            return float(v) if v is not None else np.nan
+        except Exception:
+            return np.nan
+    arr = lambda var: np.array([safe_value(var[t]) for t in range(T)])
     res = df.copy()
     res["generation"] = gen.values
     res["load"]       = load.values
@@ -177,31 +186,44 @@ def run_lp(
     res = res.loc[:, ~res.columns.duplicated()]
     res = res.dropna(axis=1, how='all')
     res = res.loc[:, ~res.columns.str.contains('^Unnamed', na=False)]
+    # Ensure all columns are numeric after LP extraction
+    for col in res.columns:
+        res[col] = pd.to_numeric(res[col], errors='coerce')
 
     # ── Metrics calculation ────────────────────────────────────
-    total_load = float(res["load"].sum())
-    served = float(res["serve"].sum())
+    total_load = float(res["load"].sum(skipna=True))
+    served = float(res["serve"].sum(skipna=True))
     grid_exp = res["grid_exp"].to_numpy(dtype=float)
     grid_imp = res["grid_imp"].to_numpy(dtype=float)
     price_arr = res["price"].to_numpy(dtype=float)
     revenue_tot = ((grid_exp - grid_imp) * price_arr).sum() / 1000
-    total_wind = float(df["Wind (MW)"].fillna(0).sum())
-    total_solar = float(df["Solar (MW)"].fillna(0).sum())
+    total_wind = float(df["Wind (MW)"].fillna(0).sum(skipna=True))
+    total_solar = float(df["Solar (MW)"].fillna(0).sum(skipna=True))
     total_gen = total_wind + total_solar
     green_gen_over_load_pct = (total_gen / total_load * 100) if total_load > 0 else 0.0
     resilience_pct = round(served / total_load * 100, 2) if total_load > 0 else 0.0
-    total_charge = float(res["charge"].sum()) if "charge" in res else 0.0
-    total_clip = float(res["clipped"].sum()) if "clipped" in res else 0.0
-    total_gen_mwh = float(res["generation"].sum()) if "generation" in res else 0.0
+    total_charge = float(res["charge"].sum(skipna=True)) if "charge" in res else 0.0
+    total_clip = float(res["clipped"].sum(skipna=True)) if "clipped" in res else 0.0
+    total_gen_mwh = float(res["generation"].sum(skipna=True)) if "generation" in res else 0.0
+    
     capex = (
         cfg.capex_power_usd_per_kw  * cfg.battery_power_mw   * 1000 +
         cfg.capex_energy_usd_per_kwh* cfg.battery_energy_mwh * 1000 +
         cfg.capex_power_usd_per_kw  * cfg.battery2_power_mw  * 1000 +
         cfg.capex_energy_usd_per_kwh* cfg.battery2_energy_mwh* 1000
     )
+    # Calculate clipped revenue (only valid for no-grid case, after results are collected)
+    clipped_revenue = None
+    if not grid_allowed and "clipped" in res and "price" in res:
+        clipped_arr = res["clipped"].to_numpy(dtype=float)
+        price_arr = res["price"].to_numpy(dtype=float)
+        if len(clipped_arr) == len(price_arr):
+            clipped_revenue = float((clipped_arr * price_arr).sum() / 1000)  # $/MWh to $
+        else:
+            clipped_revenue = None
     # Calculate number of cycles for each battery
-    discharge1_sum = float(res["discharge1"].sum()) if "discharge1" in res else 0.0
-    discharge2_sum = float(res["discharge2"].sum()) if "discharge2" in res else 0.0
+    discharge1_sum = float(res["discharge1"].to_numpy(dtype=float).sum()) if "discharge1" in res else 0.0
+    discharge2_sum = float(res["discharge2"].to_numpy(dtype=float).sum()) if "discharge2" in res else 0.0
     cycles1 = discharge1_sum / float(cfg.battery_energy_mwh) if cfg.battery_energy_mwh > 0 else 0.0
     cycles2 = discharge2_sum / float(cfg.battery2_energy_mwh) if cfg.battery2_energy_mwh > 0 else 0.0
     charge_arr = res["charge"].to_numpy(dtype=float) if "charge" in res else np.zeros(len(res))
@@ -224,6 +246,13 @@ def run_lp(
         "cycles_battery1": round(float(cycles1), 2),
         "cycles_battery2": round(float(cycles2), 2),
     }
+    if clipped_revenue is not None:
+        mets["clipped_revenue_$"] = round(clipped_revenue, 2)
+        mets["clipped_revenue_explanation"] = (
+            "Clipped revenue estimates the potential market revenue if all clipped (spilled) renewable energy "
+            "could have been sold at the market price. This is only valid in the no-grid case, and represents "
+            "the value of energy that was generated but could not be used or exported."
+        )
     mets["ppa_price_per_kwh"] = 0.0 # Removed ppa_price
 
     # --- Sanity checks ---
@@ -302,10 +331,10 @@ def tradeoff_analysis(
         if POI is not None:
             prob1 += gen.iloc[t] + dis1[t] - chg1[t] <= POI
     prob1.solve(pulp.PULP_CBC_CMD(msg=False))
-    S_max = pulp.value(prob1.objective)
-    if S_max is None:
-        raise RuntimeError("Max resilience problem infeasible: S_max is None")
-    S_max = float(S_max)
+    S_max_raw = pulp.value(prob1.objective)
+    if S_max_raw is None or not isinstance(S_max_raw, (int, float)):
+        raise RuntimeError("Max resilience problem infeasible: S_max is None or not a number")
+    S_max = float(S_max_raw)
     # --- Phase 2: For each slack, maximize revenue with min serve constraint ---
     results = []
     dispatch_dict = {}

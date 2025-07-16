@@ -22,6 +22,26 @@ import datetime
 from typing import cast, Literal
 import time
 
+# Helper to robustly extract date from index min/max
+def get_date_safe(val):
+    import pandas as pd
+    import datetime
+    if pd.isnull(val) or str(val) == 'NaT':
+        return datetime.date(2015, 1, 1)  # fallback
+    if isinstance(val, pd.Timestamp):
+        return val.date()
+    if isinstance(val, datetime.datetime):
+        return val.date()
+    if isinstance(val, datetime.date):
+        return val
+    try:
+        d = pd.Timestamp(val)
+        if pd.isnull(d) or str(d) == 'NaT':
+            return datetime.date(2015, 1, 1)
+        return d.date()
+    except Exception:
+        return datetime.date(2015, 1, 1)
+
 # ── Page set-up ───────────────────────────────────────────────
 st.set_page_config(page_title="Battery Dispatch", layout="wide")
 st.title("Battery Dispatch Optimiser")
@@ -65,6 +85,7 @@ with st.sidebar.expander("? Data format help"):
 # Data handling logic
 user_df = None
 user_data_source = "synthetic"
+d_from, d_to = None, None  # Will be set after date selection
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith(".csv"):
@@ -86,6 +107,9 @@ if uploaded_file is not None:
             if n_after < n_before:
                 st.warning(f"Dropped {n_before - n_after} rows with unparseable datetimes.")
             df_up = df_up.set_index("Datetime")
+            # Ensure index is DatetimeIndex
+            if not isinstance(df_up.index, pd.DatetimeIndex):
+                df_up.index = pd.to_datetime(df_up.index)
             # Fill missing optional columns with zeros
             filled_cols = []
             for col in optional_cols:
@@ -97,22 +121,42 @@ if uploaded_file is not None:
             # Check for missing values in required columns (excluding Datetime)
             req_cols_no_dt = [col for col in required_cols if col != "Datetime"]
             missing_vals = df_up[req_cols_no_dt].isnull().any()
-            import numpy as np
             if isinstance(missing_vals, bool):
                 missing_cols = req_cols_no_dt if missing_vals else []
-            elif isinstance(missing_vals, pd.Series):
-                missing_cols = list(missing_vals[missing_vals].index)
-            elif isinstance(missing_vals, np.ndarray):
-                # Always convert ndarray to Series for consistent indexing
+            else:
+                import pandas as pd
                 missing_vals = pd.Series(missing_vals, index=req_cols_no_dt)
                 missing_cols = list(missing_vals[missing_vals].index)
-            else:
-                missing_cols = []
             if len(missing_cols) > 0:
                 st.error(f"Missing values in required columns: {missing_cols}. Please fix your file.")
             else:
-                user_df = df_up
+                import pandas as pd
+                user_df = pd.DataFrame(df_up)
                 user_data_source = "uploaded"
+                # Ensure index is DatetimeIndex
+                if not isinstance(user_df.index, pd.DatetimeIndex):
+                    user_df.index = pd.to_datetime(user_df.index)
+                min_date = get_date_safe(user_df.index.min())
+                max_date = get_date_safe(user_df.index.max())
+                # Ensure min_date and max_date are datetime.date
+                import datetime
+                if not isinstance(min_date, datetime.date):
+                    min_date = datetime.date(2015, 1, 1)
+                if not isinstance(max_date, datetime.date):
+                    max_date = datetime.date(2015, 1, 1)
+                selected_dates = st.sidebar.date_input(
+                    "Date window for analysis",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
+                if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+                    d_from, d_to = selected_dates
+                else:
+                    st.error("Please select a valid start and end date.")
+                    st.stop()
+                mask = (user_df.index >= pd.to_datetime(d_from)) & (user_df.index <= pd.to_datetime(d_to))
+                user_df = user_df.loc[mask]
                 st.success("File uploaded and parsed successfully.")
                 st.dataframe(user_df.head(), use_container_width=True)
                 if filled_cols:
@@ -123,8 +167,33 @@ else:
     # If no file uploaded, use the static template as default data
     template_path = "template_may2015.csv"
     user_df = pd.read_csv(template_path, parse_dates=["Datetime"])
+    user_df = pd.DataFrame(user_df)
     user_df = user_df.set_index("Datetime")
+    # Ensure index is DatetimeIndex
+    if not isinstance(user_df.index, pd.DatetimeIndex):
+        user_df.index = pd.to_datetime(user_df.index)
     user_data_source = "template"
+    min_date = get_date_safe(user_df.index.min())
+    max_date = get_date_safe(user_df.index.max())
+    # Ensure min_date and max_date are datetime.date
+    import datetime
+    if not isinstance(min_date, datetime.date):
+        min_date = datetime.date(2015, 1, 1)
+    if not isinstance(max_date, datetime.date):
+        max_date = datetime.date(2015, 1, 1)
+    selected_dates = st.sidebar.date_input(
+        "Date window for analysis",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date
+    )
+    if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+        d_from, d_to = selected_dates
+    else:
+        st.error("Please select a valid start and end date.")
+        st.stop()
+    mask = (user_df.index >= pd.to_datetime(d_from)) & (user_df.index <= pd.to_datetime(d_to))
+    user_df = user_df.loc[mask]
 
 # Warn if market price values look like $/kWh
 if user_df is not None and "Market Price ($/MWh)" in user_df.columns:
@@ -219,27 +288,37 @@ run = st.sidebar.button("🚀 Run optimisation")
 # If using synthetic data, keep date window selection
 if user_data_source == "synthetic":
     _date_default = (datetime.date(2015, 5, 1), datetime.date(2015, 5, 31))
-    date_window = st.sidebar.date_input(
-        "Date window",
-        value=_date_default
+    min_date = _date_default[0]
+    max_date = _date_default[1]
+    selected_dates = st.sidebar.date_input(
+        "Date window for analysis",
+        value=_date_default,
+        min_value=min_date,
+        max_value=max_date
     )
-    if isinstance(date_window, tuple) and len(date_window) == 2:
-        d_from, d_to = date_window
+    if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+        d_from, d_to = selected_dates
     else:
-        st.error("Please select a start and end date.")
+        st.error("Please select a valid start and end date.")
         st.stop()
     # Hardcoded Excel path and sheet name for synthetic fallback
     excel_path = r"C:\Users\1010013\OneDrive - Deriva Energy\Documents\python_file_100.xlxs.xlsx"
     sheet = "Combined"
+else:
+    # d_from and d_to already set above for uploaded/template
+    pass
 
 # Always build config and load data before main workflow
 try:
     if user_data_source in ["uploaded", "template"] and user_df is not None:
         df = user_df.copy()
+        # Ensure df is a pandas DataFrame before accessing .index
+        import pandas as pd
+        if not isinstance(df, pd.DataFrame):
+            df = pd.DataFrame(df)
         idx = pd.to_datetime(df.index)
         d_from = idx.min()
         d_to = idx.max()
-        import pandas as pd
         if not isinstance(d_from, pd.Timestamp):
             d_from = pd.Timestamp(str(d_from))
         if not isinstance(d_to, pd.Timestamp):
@@ -293,15 +372,20 @@ try:
                 poi_limit_mw       = poi_limit,
                 market_price_col   = "Market Price ($/MWh)",
             )
-        df = data_io.load_data(run_cfg)
-        # Always override with synthetic load for this path
+        # === FIX: Use user_df directly for uploaded files, otherwise load from disk ===
+        if user_data_source == "uploaded":
+            df = user_df.copy()
+        else:
+            df = data_io.load_data(run_cfg)
+        # Only override with synthetic load if user selects 'Synthetic profile'
         from dispatch_core.profiles import generate
         valid_types = ["24-7", "16-7", "random", "random_16-7"]
-        if run_cfg.load_type not in valid_types:
-            st.error(f"Invalid load_type for synthetic profile: {run_cfg.load_type}")
-        else:
-            df["Load (MW)"] = generate(pd.DatetimeIndex(df.index), run_cfg)
-            run_cfg.load_mw = float(df["Load (MW)"].mean())
+        if load_source.strip().lower() == "synthetic profile":
+            if run_cfg.load_type not in valid_types:
+                st.error(f"Invalid load_type for synthetic profile: {run_cfg.load_type}")
+            else:
+                df["Load (MW)"] = generate(pd.DatetimeIndex(df.index), run_cfg)
+                run_cfg.load_mw = float(df["Load (MW)"].mean())
 except Exception as e:
     st.error(f"⚠️ Config or data load failed: {e}")
     run_cfg = None
@@ -357,7 +441,7 @@ if run and df is not None and run_cfg is not None:
         st.markdown(f"**Cumulative Revenue (final):** ${revenue_ts.cumsum().iloc[-1]:,.2f}")
         with st.expander("Show entire dispatch DataFrame"):
             st.dataframe(res, height=400, use_container_width=True)
-        case_label = f"dispatch_{'gridON' if grid_on else 'gridOFF'}_{'gridON' if grid_on else 'gridOFF'}_{str(d_from)}_{str(d_to)}.csv"
+        case_label = f"dispatch_{'gridON' if grid_on else 'gridOFF'}_{str(d_from)}_{str(d_to)}.csv"
         csv = res.to_csv().encode()
         st.download_button("⬇️ Time‑series CSV", csv, case_label)
         buf = io.BytesIO()
@@ -400,7 +484,7 @@ if run and df is not None and run_cfg is not None:
         st.pyplot(fig)
         with st.expander("Show entire dispatch DataFrame"):
             st.dataframe(res, height=400, use_container_width=True)
-        case_label = f"dispatch_{'gridON' if grid_on else 'gridOFF'}_{'gridON' if grid_on else 'gridOFF'}_{str(d_from)}_{str(d_to)}.csv"
+        case_label = f"dispatch_{'gridON' if grid_on else 'gridOFF'}_{str(d_from)}_{str(d_to)}.csv"
         csv = res.to_csv().encode()
         st.download_button("⬇️ Time‑series CSV", csv, case_label)
         buf = io.BytesIO()
