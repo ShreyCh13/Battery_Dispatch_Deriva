@@ -6,12 +6,18 @@ def load_data(cfg: RunConfig) -> pd.DataFrame:
     if not os.path.exists(cfg.path):
         sys.exit(f"[data_io] File not found: {cfg.path}")
 
-    df = pd.read_excel(
-        cfg.path,
-        sheet_name=cfg.sheet_name,
-        engine="openpyxl",
-        parse_dates={"Datetime": ["Date", "Time"]},
-    ).set_index("Datetime")
+    # Use the correct loader based on file extension
+    if str(cfg.path).lower().endswith('.csv'):
+        df = pd.read_csv(cfg.path, parse_dates=["Datetime"])
+        if "Datetime" in df.columns:
+            df = df.set_index("Datetime")
+    else:
+        df = pd.read_excel(
+            cfg.path,
+            sheet_name=cfg.sheet_name,
+            engine="openpyxl",
+            parse_dates={"Datetime": ["Date", "Time"]},
+        ).set_index("Datetime")
 
     df = df.loc[cfg.start_date : cfg.end_date]
 

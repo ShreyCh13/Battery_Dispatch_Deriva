@@ -123,7 +123,11 @@ if uploaded_file is not None:
             elif isinstance(missing_vals, pd.Series):
                 missing_cols = list(missing_vals[missing_vals].index)
             elif isinstance(missing_vals, np.ndarray):
-                missing_cols = req_cols_no_dt if missing_vals.item() else []
+                # If it's a boolean array, get the columns where True
+                if missing_vals.dtype == bool and missing_vals.shape == (len(req_cols_no_dt),):
+                    missing_cols = [col for col, miss in zip(req_cols_no_dt, missing_vals) if miss]
+                else:
+                    missing_cols = req_cols_no_dt if missing_vals.any() else []
             else:
                 missing_cols = []
             if len(missing_cols) > 0:
@@ -132,7 +136,7 @@ if uploaded_file is not None:
                 user_df = df_up
                 user_data_source = "uploaded"
                 st.success("File uploaded and parsed successfully.")
-                st.dataframe(df_up.head(), use_container_width=True)
+                st.dataframe(user_df.head(), use_container_width=True)
                 if filled_cols:
                     st.info(f"Filled missing optional columns with zeros: {filled_cols}")
     except Exception as e:
@@ -157,17 +161,23 @@ def get_data_and_source():
         return None, "synthetic"
 
 # After file upload and validation logic, before load profile section
-load_source = "synthetic"
+# Determine if user uploaded a file or is using the template
+if uploaded_file is not None:
+    load_source_default = 0  # Default to 'Uploaded file' if user uploaded
+else:
+    load_source_default = 1  # Default to 'Synthetic profile' if using template
+
+# Always show the radio button if user_df is not None (template or upload)
 if user_df is not None:
     load_source = st.sidebar.radio(
         "Select load data source",
         options=["Uploaded file", "Synthetic profile"],
-        index=0,
+        index=load_source_default,
         help="Choose whether to use the load curve from your uploaded file or generate a synthetic load profile."
     )
 else:
     st.sidebar.info("No file uploaded. Using synthetic load profile.")
-    load_source = "synthetic"
+    load_source = "Synthetic profile"
 
 # ── sidebar – load profile ───────────────────────────────────
 st.sidebar.header("2 · Load profile")
@@ -254,14 +264,11 @@ if user_data_source == "synthetic":
 # Always build config and load data before main workflow
 try:
     if user_data_source in ["uploaded", "template"] and user_df is not None:
-        # Use uploaded data, override df and run_cfg
         df = user_df.copy()
-        # Use the first and last date in the uploaded data for config
         idx = pd.to_datetime(df.index)
         d_from = idx.min()
         d_to = idx.max()
         import pandas as pd
-        # Ensure d_from and d_to are date objects
         if not isinstance(d_from, pd.Timestamp):
             d_from = pd.Timestamp(str(d_from))
         if not isinstance(d_to, pd.Timestamp):
@@ -269,59 +276,68 @@ try:
         d_from = d_from.date()
         d_to = d_to.date()
         from pathlib import Path
-        # When building run_cfg, use cast to ensure correct type
-        # For uploaded/template data
-        run_cfg = cfg.RunConfig(
-            path           = Path("template_may2015.csv" if user_data_source == "template" else "uploaded.csv"),
-            sheet_name     = user_data_source,
-            start_date     = str(d_from),
-            end_date       = str(d_to),
-            load_mw        = float(df["Load (MW)"].mean()),
-            load_std       = 0.0,
-            load_type      = cast(Literal['24-7', '16-7', 'random', 'random_16-7'], load_type_value),
-            battery_power_mw   = batt_power,
-            battery_duration_h = batt_dur,
-            battery_count      = 1,
-            rte                = batt_rte,
-            battery2_power_mw     = batt2_power,
-            battery2_duration_h   = batt2_dur,
-            battery2_rte          = batt2_rte,
-            poi_limit_mw       = poi_limit,
-            market_price_col   = "Market Price ($/MWh)",
-        )
-        # If user selects synthetic load, override load column in df
-        if load_source == "Synthetic profile":
+        if load_source.strip().lower() == "synthetic profile":
+            # Use sidebar values for synthetic config
+            run_cfg = cfg.RunConfig(
+                path           = Path("template_may2015.csv" if user_data_source == "template" else "uploaded.csv"),
+                sheet_name     = user_data_source,
+                start_date     = str(d_from),
+                end_date       = str(d_to),
+                load_mw        = load_mw,
+                load_std       = load_std,
+                load_type      = cast(Literal['24-7', '16-7', 'random', 'random_16-7'], load_type_value),
+                battery_power_mw   = batt_power,
+                battery_duration_h = batt_dur,
+                battery_count      = 1,
+                rte                = batt_rte,
+                battery2_power_mw     = batt2_power,
+                battery2_duration_h   = batt2_dur,
+                battery2_rte          = batt2_rte,
+                poi_limit_mw       = poi_limit,
+                market_price_col   = "Market Price ($/MWh)",
+            )
             from dispatch_core.profiles import generate
-            df["Load (MW)"] = generate(pd.DatetimeIndex(df.index), run_cfg)
-    else:
-        # Use synthetic data (should not be reached now)
-        run_cfg = cfg.RunConfig(
-            path           = Path(excel_path),
-            sheet_name     = sheet,
-            start_date     = str(d_from),
-            end_date       = str(d_to),
-            load_mw        = load_mw,
-            load_std       = load_std,
-            load_type      = cast(Literal['24-7', '16-7', 'random', 'random_16-7'], load_type_value),
-            battery_power_mw   = batt_power,
-            battery_duration_h = batt_dur,
-            battery_count      = 1,
-            rte                = batt_rte,
-            battery2_power_mw     = batt2_power,
-            battery2_duration_h   = batt2_dur,
-            battery2_rte          = batt2_rte,
-            poi_limit_mw       = poi_limit,
-        )
+            valid_types = ["24-7", "16-7", "random", "random_16-7"]
+            if run_cfg.load_type not in valid_types:
+                st.error(f"Invalid load_type for synthetic profile: {run_cfg.load_type}")
+            else:
+                df["Load (MW)"] = generate(pd.DatetimeIndex(df.index), run_cfg)
+                user_df["Load (MW)"] = df["Load (MW)"]
+        else:
+            run_cfg = cfg.RunConfig(
+                path           = Path("template_may2015.csv" if user_data_source == "template" else "uploaded.csv"),
+                sheet_name     = user_data_source,
+                start_date     = str(d_from),
+                end_date       = str(d_to),
+                load_mw        = float(df["Load (MW)"].mean()),
+                load_std       = 0.0,
+                load_type      = cast(Literal['24-7', '16-7', 'random', 'random_16-7'], load_type_value),
+                battery_power_mw   = batt_power,
+                battery_duration_h = batt_dur,
+                battery_count      = 1,
+                rte                = batt_rte,
+                battery2_power_mw     = batt2_power,
+                battery2_duration_h   = batt2_dur,
+                battery2_rte          = batt2_rte,
+                poi_limit_mw       = poi_limit,
+                market_price_col   = "Market Price ($/MWh)",
+            )
         df = data_io.load_data(run_cfg)
+        # Always override with synthetic load for this path
+        from dispatch_core.profiles import generate
+        valid_types = ["24-7", "16-7", "random", "random_16-7"]
+        if run_cfg.load_type not in valid_types:
+            st.error(f"Invalid load_type for synthetic profile: {run_cfg.load_type}")
+        else:
+            df["Load (MW)"] = generate(pd.DatetimeIndex(df.index), run_cfg)
+            run_cfg.load_mw = float(df["Load (MW)"].mean())
 except Exception as e:
     st.error(f"⚠️ Config or data load failed: {e}")
     run_cfg = None
     df = None
 
 # --- FIX: Always override with synthetic load if the button is toggled ---
-if df is not None and run_cfg is not None and load_source.strip().lower().startswith("synthetic"):
-    from dispatch_core.profiles import generate
-    df["Load (MW)"] = generate(pd.DatetimeIndex(df.index), run_cfg)
+# (This block is now handled above and can be removed)
 
 # ── main workflow ────────────────────────────────────────────
 if run and df is not None and run_cfg is not None:
