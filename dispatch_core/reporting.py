@@ -1,10 +1,28 @@
+"""
+reporting.py
+------------
+Provides plotting and reporting utilities for battery dispatch simulation results.
+Includes matplotlib and plotly visualizations for dispatch, state of charge, clipped energy, grid flows, and revenue.
+"""
+
 import matplotlib.pyplot as plt
 import pandas as pd
 from .config import RunConfig
 import plotly.graph_objs as go
 import numpy as np
 
-def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title="Dispatch"):
+def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch") -> plt.Figure:
+    """
+    Plot stacked area chart of dispatch (solar, wind, battery 1, battery 2) and grid import/export.
+
+    Args:
+        res (pd.DataFrame): Dispatch results DataFrame.
+        cfg (RunConfig): Run configuration object.
+        title (str): Plot title.
+
+    Returns:
+        plt.Figure: Matplotlib figure object.
+    """
     t = res.index
     # Extract individual sources
     solar = res["Solar (MW)"] if "Solar (MW)" in res else pd.Series(0, index=t)
@@ -37,7 +55,18 @@ def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title="Dispatch"):
     ax.set_title(title); fig.tight_layout()
     return fig
 
-def plot_soc(res: pd.DataFrame, cfg: RunConfig, title="Battery State of Charge"):
+def plot_soc(res: pd.DataFrame, cfg: RunConfig, title: str = "Battery State of Charge") -> plt.Figure:
+    """
+    Plot state of charge (SOC) for both batteries over time.
+
+    Args:
+        res (pd.DataFrame): Dispatch results DataFrame.
+        cfg (RunConfig): Run configuration object.
+        title (str): Plot title.
+
+    Returns:
+        plt.Figure: Matplotlib figure object.
+    """
     t = res.index
     fig, ax = plt.subplots(figsize=(14,5))
     ax.plot(t, res["soc1"], label="Battery 1 SOC", color="blue")
@@ -47,7 +76,18 @@ def plot_soc(res: pd.DataFrame, cfg: RunConfig, title="Battery State of Charge")
     ax.legend(); fig.tight_layout()
     return fig
 
-def plot_clipped(res: pd.DataFrame, cfg: RunConfig, title="Clipped Energy"):
+def plot_clipped(res: pd.DataFrame, cfg: RunConfig, title: str = "Clipped Energy") -> plt.Figure:
+    """
+    Plot clipped (unused/curtailed) energy over time.
+
+    Args:
+        res (pd.DataFrame): Dispatch results DataFrame.
+        cfg (RunConfig): Run configuration object.
+        title (str): Plot title.
+
+    Returns:
+        plt.Figure: Matplotlib figure object.
+    """
     t = res.index
     fig, ax = plt.subplots(figsize=(14,5))
     ax.plot(t, res["clipped"], label="Clipped Energy", color="red")
@@ -56,7 +96,18 @@ def plot_clipped(res: pd.DataFrame, cfg: RunConfig, title="Clipped Energy"):
     ax.legend(); fig.tight_layout()
     return fig
 
-def plot_grid(res: pd.DataFrame, cfg: RunConfig, title="Grid Charging/Discharging"):
+def plot_grid(res: pd.DataFrame, cfg: RunConfig, title: str = "Grid Charging/Discharging") -> plt.Figure:
+    """
+    Plot grid import (charging) and export (discharging) over time.
+
+    Args:
+        res (pd.DataFrame): Dispatch results DataFrame.
+        cfg (RunConfig): Run configuration object.
+        title (str): Plot title.
+
+    Returns:
+        plt.Figure: Matplotlib figure object.
+    """
     t = res.index
     fig, ax = plt.subplots(figsize=(14,5))
     ax.plot(t, res["grid_imp"], label="Grid Import (Charging)", color="brown")
@@ -66,7 +117,18 @@ def plot_grid(res: pd.DataFrame, cfg: RunConfig, title="Grid Charging/Dischargin
     ax.legend(); fig.tight_layout()
     return fig
 
-def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title="Revenue Over Time"):
+def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title: str = "Revenue Over Time") -> plt.Figure:
+    """
+    Plot cumulative revenue over time, with market price overlay.
+
+    Args:
+        res (pd.DataFrame): Dispatch results DataFrame.
+        cfg (RunConfig): Run configuration object.
+        title (str): Plot title.
+
+    Returns:
+        plt.Figure: Matplotlib figure object.
+    """
     t = res.index
     if "price" in res:
         revenue = ((res["grid_exp"] - res["grid_imp"]) * res["price"]) / 1000  # $/h
@@ -86,7 +148,18 @@ def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title="Revenue Over Time"):
         fig.tight_layout()
         return fig
 
-def plot_dispatch_plotly(res, cfg, title="Dispatch (All Metrics)"):
+def plot_dispatch_plotly(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch (All Metrics)") -> go.Figure:
+    """
+    Create an interactive Plotly figure for all available dispatch metrics.
+
+    Args:
+        res (pd.DataFrame): Dispatch results DataFrame.
+        cfg (RunConfig): Run configuration object.
+        title (str): Plot title.
+
+    Returns:
+        go.Figure: Plotly figure object.
+    """
     t = res.index
     fig = go.Figure()
     # Add traces for each available metric

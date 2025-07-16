@@ -1,13 +1,8 @@
-# ──────────────────────────────────────────────────────────────
-# streamlit_app.py   (place in BATTERY_DISPATCH/, not inside dispatch_core/)
-# ──────────────────────────────────────────────────────────────
 """
-Battery‑Dispatch UI
-– multiple stacks
-– POI limit
-– grid on/off
-– resilience optimisation (with optional trade-off curve)
-– full time‑series download
+streamlit_app.py
+----------------
+Streamlit web application for interactive battery dispatch optimization.
+Allows users to upload data, configure battery and grid parameters, run optimizations, and visualize results.
 """
 
 from pathlib import Path
@@ -17,7 +12,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 # from dispatch_core.optimize import tradeoff_analysis  # No longer needed as direct import
 
-# import in safe order: config FIRST
+# Import core modules in safe order: config FIRST
 import dispatch_core.config    as cfg
 import dispatch_core.data_io   as data_io
 import dispatch_core.optimize  as optimize
@@ -27,13 +22,11 @@ import datetime
 from typing import cast, Literal
 import time
 
-
-# ── page set‑up ───────────────────────────────────────────────
+# ── Page set-up ───────────────────────────────────────────────
 st.set_page_config(page_title="Battery Dispatch", layout="wide")
 st.title("Battery Dispatch Optimiser")
 
-
-# ── sidebar – Excel source ───────────────────────────────────
+# ── Sidebar: Data source ─────────────────────────────────────
 st.sidebar.header("1 · Data source (upload or synthetic)")
 # Downloadable template (static file)
 template_path = "template_may2015.csv"
@@ -51,19 +44,16 @@ uploaded_file = st.sidebar.file_uploader(
     help="Required columns: Datetime, Load (MW), Market Price ($/MWh). Optional: Wind (MW), Solar (MW), NatGas (MW). Download the template above."
 )
 
-# Help section
+# Help section for data format
 with st.sidebar.expander("? Data format help"):
     st.markdown("""
     **Required columns:**
     - `Datetime` (parseable, e.g. 2023-01-01 00:00)
     - `Load (MW)`
     - `Market Price ($/MWh)`
-    
     **Optional columns:**
     - `Wind (MW)`, `Solar (MW)`, `NatGas (MW)` (filled with zeros if missing)
-    
     **File types:** CSV, Excel (.xlsx)
-    
     **How missing data is handled:**
     - Missing required columns: error, must fix
     - Missing optional columns: filled with zeros
@@ -88,10 +78,10 @@ if uploaded_file is not None:
         if missing_required:
             st.error(f"Missing required column(s): {missing_required}. Please check your file.")
         else:
-            # Parse datetime
+            # Parse datetime and drop unparseable rows
             df_up["Datetime"] = pd.to_datetime(df_up["Datetime"], errors="coerce")
             n_before = len(df_up)
-            df_up = df_up.dropna(subset=["Datetime"])  # Drop rows with unparseable datetime
+            df_up = df_up.dropna(subset=["Datetime"])
             n_after = len(df_up)
             if n_after < n_before:
                 st.warning(f"Dropped {n_before - n_after} rows with unparseable datetimes.")
@@ -102,32 +92,20 @@ if uploaded_file is not None:
                 if col not in df_up.columns:
                     df_up[col] = 0.0
                     filled_cols.append(col)
-            # Fill missing values in optional columns with zeros
             for col in optional_cols:
                 df_up[col] = df_up[col].fillna(0.0)
-            # After validation, rename columns to match optimizer expectations
-            col_map = {
-                "Wind (MW)": "Net Power - wind (MW)",
-                "Solar (MW)": "Net Power - solar (MW)",
-            }
-            df_up.rename(columns=col_map, inplace=True)
-            # Fix for missing values in required columns
-            # Check for missing values in required columns (excluding Datetime, which is now index)
+            # Check for missing values in required columns (excluding Datetime)
             req_cols_no_dt = [col for col in required_cols if col != "Datetime"]
             missing_vals = df_up[req_cols_no_dt].isnull().any()
-            # Handle bool, Series, and ndarray cases
             import numpy as np
-            import pandas as pd
             if isinstance(missing_vals, bool):
                 missing_cols = req_cols_no_dt if missing_vals else []
             elif isinstance(missing_vals, pd.Series):
                 missing_cols = list(missing_vals[missing_vals].index)
             elif isinstance(missing_vals, np.ndarray):
-                # If it's a boolean array, get the columns where True
-                if missing_vals.dtype == bool and missing_vals.shape == (len(req_cols_no_dt),):
-                    missing_cols = [col for col, miss in zip(req_cols_no_dt, missing_vals) if miss]
-                else:
-                    missing_cols = req_cols_no_dt if missing_vals.any() else []
+                # Always convert ndarray to Series for consistent indexing
+                missing_vals = pd.Series(missing_vals, index=req_cols_no_dt)
+                missing_cols = list(missing_vals[missing_vals].index)
             else:
                 missing_cols = []
             if len(missing_cols) > 0:
@@ -148,26 +126,25 @@ else:
     user_df = user_df.set_index("Datetime")
     user_data_source = "template"
 
-# After loading user_df (template or upload), add a warning if market price values look like $/kWh
+# Warn if market price values look like $/kWh
 if user_df is not None and "Market Price ($/MWh)" in user_df.columns:
     if user_df["Market Price ($/MWh)"].max() < 10:
         st.warning("Market price values look very low. Are you using $/kWh instead of $/MWh? All calculations assume $/MWh.")
 
-# Fallback: use synthetic if no valid upload
+# Helper for data and source
 def get_data_and_source():
+    """Return the user DataFrame and data source type."""
     if user_df is not None:
         return user_df, "uploaded"
     else:
         return None, "synthetic"
 
-# After file upload and validation logic, before load profile section
-# Determine if user uploaded a file or is using the template
+# Sidebar: load profile selection
 if uploaded_file is not None:
     load_source_default = 0  # Default to 'Uploaded file' if user uploaded
 else:
     load_source_default = 1  # Default to 'Synthetic profile' if using template
 
-# Always show the radio button if user_df is not None (template or upload)
 if user_df is not None:
     load_source = st.sidebar.radio(
         "Select load data source",
@@ -179,10 +156,9 @@ else:
     st.sidebar.info("No file uploaded. Using synthetic load profile.")
     load_source = "Synthetic profile"
 
-# ── sidebar – load profile ───────────────────────────────────
+# ── Sidebar: load profile ────────────────────────────────────
 st.sidebar.header("2 · Load profile")
 load_mw   = st.sidebar.number_input("Average load\u00a0MW", 0.0, 2000.0, 150.0, 10.0)
-# Update the options and labels for load_type
 load_type_options = [
     ("24-7", "24-7"),
     ("16-7", "16-7"),
@@ -191,33 +167,29 @@ load_type_options = [
 ]
 load_type_labels = [label for _, label in load_type_options]
 load_type_values = [value for value, _ in load_type_options]
-load_type_idx = 0
 load_type = st.sidebar.selectbox(
     "Shape",
     load_type_labels,
     index=0,
     help="Random modes use 'Load–std' as \u03c3"
 )
-# Map label back to value
 load_type_value = load_type_values[load_type_labels.index(load_type)]
 
-# Only show std dev input for random types
 if load_type_value.startswith("random"):
     load_std  = st.sidebar.number_input("Load–std (MW) for random modes", 0.0, 500.0, 15.0, 1.0)
 else:
-    load_std = 15.0  # or a default, but will not be used
+    load_std = 15.0
 
-# ── sidebar – battery specs ──────────────────────────────────
+# ── Sidebar: battery specs ───────────────────────────────────
 st.sidebar.header("3 · Battery stacks")
 batt_power = st.sidebar.number_input("Battery 1 Power MW", 0.0, 2000.0, 200.0, 10.0)
 batt_dur   = st.sidebar.number_input("Battery 1 Duration h", 0.5, 1000.0, 4.0, 0.5)
 batt_rte   = st.sidebar.number_input("Battery 1 RTE", 0.5, 1.0, 0.86, 0.01)
-# Battery 2
 batt2_power = st.sidebar.number_input("Battery 2 Power MW", 0.0, 2000.0, 0.0, 10.0)
 batt2_dur   = st.sidebar.number_input("Battery 2 Duration h", 0.0, 1000.0, 0.0, 0.5)
 batt2_rte   = st.sidebar.number_input("Battery 2 RTE", 0.5, 1.0, 0.86, 0.01)
 
-# ── sidebar – POI and grid flag ──────────────────────────────
+# ── Sidebar: POI and grid flag ───────────────────────────────
 st.sidebar.header("4 · POI / Grid")
 poi_limit  = st.sidebar.number_input("POI limit MW", 1.0, 5000.0, 250.0, 10.0)
 
@@ -227,14 +199,13 @@ grid_on = st.sidebar.toggle(
     help="If ON, all load is served and the optimizer maximizes net revenue. If OFF, the optimizer maximizes load served (resilience)."
 )
 
-# ── sidebar – optimisation objective (static, not dropdown) ──
+# ── Sidebar: optimisation objective ──────────────────────────
 st.sidebar.header("5 · Optimisation")
 if grid_on:
     st.sidebar.info("**Objective:** Maximize net revenue (all load is served)")
 else:
     st.sidebar.info("**Objective:** Maximize load served (Resilience)")
 
-# Only show trade-off analysis if grid is OFF
 tradeoff_toggle = False
 if not grid_on:
     tradeoff_toggle = st.sidebar.checkbox(
@@ -336,23 +307,17 @@ except Exception as e:
     run_cfg = None
     df = None
 
-# --- FIX: Always override with synthetic load if the button is toggled ---
-# (This block is now handled above and can be removed)
-
-# ── main workflow ────────────────────────────────────────────
+# ── Main workflow ────────────────────────────────────────────
 if run and df is not None and run_cfg is not None:
     if grid_on:
-        # Grid ON case: serve 100% of load, maximize revenue
         st.subheader("Grid ON: Maximize Revenue with 100% Load Served")
         start_time = time.time()
         st.markdown(r"""
         **All load is served (100% resilience).**
         The optimizer maximizes net revenue:
-        
         $$
         \text{Revenue} = \sum_t \left( \text{Grid Export}_t \times \text{Price}_t - \text{Grid Import}_t \times \text{Price}_t \right)
         $$
-        
         (Units: $)
         """)
         try:
@@ -368,7 +333,6 @@ if run and df is not None and run_cfg is not None:
             st.stop()
         elapsed = time.time() - start_time
         st.markdown(f"**Optimization time:** {elapsed:.2f} seconds", unsafe_allow_html=True)
-        # Show revenue and summary
         st.dataframe(pd.Series(mets).to_frame("Value").T, use_container_width=True)
         st.subheader("Dispatch overview")
         fig = reporting.plot_dispatch(res, run_cfg, title="Dispatch (Grid ON)")
@@ -377,7 +341,6 @@ if run and df is not None and run_cfg is not None:
         fig_plotly = reporting.plot_dispatch_plotly(res, run_cfg, title="Dispatch (All Metrics)")
         st.plotly_chart(fig_plotly, use_container_width=True)
         st.subheader("Grid Import/Export and Revenue Time Series")
-        # Revenue time series
         revenue_ts = (res["grid_exp"] * res["price"] - res["grid_imp"] * res["price"]) / 1000  # $/h
         res["revenue_t"] = revenue_ts
         st.line_chart(revenue_ts, use_container_width=True)
@@ -394,7 +357,6 @@ if run and df is not None and run_cfg is not None:
         st.markdown(f"**Cumulative Revenue (final):** ${revenue_ts.cumsum().iloc[-1]:,.2f}")
         with st.expander("Show entire dispatch DataFrame"):
             st.dataframe(res, height=400, use_container_width=True)
-        # Generate a descriptive filename for dispatch CSV
         case_label = f"dispatch_{'gridON' if grid_on else 'gridOFF'}_{'gridON' if grid_on else 'gridOFF'}_{str(d_from)}_{str(d_to)}.csv"
         csv = res.to_csv().encode()
         st.download_button("⬇️ Time‑series CSV", csv, case_label)
@@ -404,7 +366,6 @@ if run and df is not None and run_cfg is not None:
             zf.writestr("dispatch.csv", csv)
         st.download_button("⬇️ Everything (ZIP)", buf.getvalue(), "dispatch_results.zip")
     else:
-        # Resilience mode: maximize load served
         st.subheader("Resilience Mode: Maximize Load Served")
         start_time = time.time()
         try:
@@ -439,7 +400,6 @@ if run and df is not None and run_cfg is not None:
         st.pyplot(fig)
         with st.expander("Show entire dispatch DataFrame"):
             st.dataframe(res, height=400, use_container_width=True)
-        # Generate a descriptive filename for dispatch CSV
         case_label = f"dispatch_{'gridON' if grid_on else 'gridOFF'}_{'gridON' if grid_on else 'gridOFF'}_{str(d_from)}_{str(d_to)}.csv"
         csv = res.to_csv().encode()
         st.download_button("⬇️ Time‑series CSV", csv, case_label)
@@ -472,9 +432,7 @@ if run and df is not None and run_cfg is not None:
             st.markdown("""
             **How is revenue calculated?**  
             For each slack value, the optimizer maximizes the sum over all timesteps of:
-            
             $\text{Revenue} = \sum_t \text{Market Price}_t \times (\text{Generation}_t + \text{Discharge}_t - \text{Charge}_t)$
-            
             This represents the net export to the grid (positive for export, negative for import) times the market price at each timestep.
             """)
             st.download_button("Download trade-off table (CSV)", results_df.to_csv(index=False), "tradeoff_table.csv")
