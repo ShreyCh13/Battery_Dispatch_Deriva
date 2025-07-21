@@ -45,7 +45,7 @@ def load_data(cfg: RunConfig) -> pd.DataFrame:
     df = df.loc[cfg.start_date : cfg.end_date]
 
     # Ensure optional columns exist; fill with zeros if missing
-    for col in ["Wind (MW)", "Solar (MW)"]:
+    for col in ["Wind (MW)", "Solar (MW)", "NatGas (MW)"]:
         if col not in df.columns:
             df[col] = 0.0  # Fill missing optional columns with zeros
 

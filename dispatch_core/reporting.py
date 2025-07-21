@@ -10,8 +10,9 @@ import pandas as pd
 from .config import RunConfig
 import plotly.graph_objs as go
 import numpy as np
+from matplotlib.figure import Figure
 
-def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch") -> plt.Figure:
+def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch", show_grid: bool = True) -> Figure:
     """
     Plot stacked area chart of dispatch (solar, wind, battery 1, battery 2) and grid import/export.
 
@@ -19,6 +20,7 @@ def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch") ->
         res (pd.DataFrame): Dispatch results DataFrame.
         cfg (RunConfig): Run configuration object.
         title (str): Plot title.
+        show_grid (bool): If True, plot grid import/export line. If False, omit it (for fixed schedule mode).
 
     Returns:
         plt.Figure: Matplotlib figure object.
@@ -27,6 +29,7 @@ def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch") ->
     # Extract individual sources
     solar = res["Solar (MW)"] if "Solar (MW)" in res else pd.Series(0, index=t)
     wind = res["Wind (MW)"] if "Wind (MW)" in res else pd.Series(0, index=t)
+    natgas = res["NatGas (MW)"] if "NatGas (MW)" in res else pd.Series(0, index=t)
     battery1 = res["discharge1"] - res["charge1"] if "discharge1" in res and "charge1" in res else pd.Series(0, index=t)
     battery2 = res["discharge2"] - res["charge2"] if "discharge2" in res and "charge2" in res else pd.Series(0, index=t)
     grid = res["grid_exp"] - res["grid_imp"] if "grid_exp" in res and "grid_imp" in res else pd.Series(0, index=t)
@@ -37,25 +40,27 @@ def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch") ->
         t,
         solar,
         wind,
+        natgas,
         battery1,
         battery2,
-        labels=["Solar", "Wind", "Battery 1", "Battery 2"],
-        colors=["yellow", "orange", "blue", "green"],
-        alpha=0.7
+        labels=["Solar", "Wind", "NatGas", "Battery 1", "Battery 2"],
+        colors=["yellow", "orange", "grey", "lightblue", "lightgreen"],
+        alpha=0.6
     )
-    # Plot grid import/export as a line
-    ax.plot(t, grid, color="brown", label="Grid import/export", linewidth=1.5)
+    # Plot grid import/export as a line (always show)
+    # ax.plot(t, grid, color="brown", label="Grid import/export", linewidth=1.5)
     # Plot POI limits if available
     if POI is not None and POI > 0:
         ax.axhline(POI, color='red', linestyle='--', label='POI limit')
         ax.axhline(-POI, color='red', linestyle='--')
     ax.plot(t, res["load"], color="black", linewidth=1, label="Load")
-    ax.legend(loc="upper left")
+    # Place legend above the plot, outside the axes
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.15), ncol=3)
     ax.set_xlabel("Time"); ax.set_ylabel("Power (MW)")
     ax.set_title(title); fig.tight_layout()
     return fig
 
-def plot_soc(res: pd.DataFrame, cfg: RunConfig, title: str = "Battery State of Charge") -> plt.Figure:
+def plot_soc(res: pd.DataFrame, cfg: RunConfig, title: str = "Battery State of Charge") -> Figure:
     """
     Plot state of charge (SOC) for both batteries over time.
 
@@ -69,14 +74,14 @@ def plot_soc(res: pd.DataFrame, cfg: RunConfig, title: str = "Battery State of C
     """
     t = res.index
     fig, ax = plt.subplots(figsize=(14,5))
-    ax.plot(t, res["soc1"], label="Battery 1 SOC", color="blue")
-    ax.plot(t, res["soc2"], label="Battery 2 SOC", color="green")
+    ax.plot(t, res["soc1"], label="Battery 1 SOC", color="lightblue", alpha=0.5)
+    ax.plot(t, res["soc2"], label="Battery 2 SOC", color="lightgreen", alpha=0.5)
     ax.set_xlabel("Time"); ax.set_ylabel("State of Charge (MWh)")
     ax.set_title(title)
     ax.legend(); fig.tight_layout()
     return fig
 
-def plot_clipped(res: pd.DataFrame, cfg: RunConfig, title: str = "Clipped Energy") -> plt.Figure:
+def plot_clipped(res: pd.DataFrame, cfg: RunConfig, title: str = "Clipped Energy") -> Figure:
     """
     Plot clipped (unused/curtailed) energy over time.
 
@@ -96,7 +101,7 @@ def plot_clipped(res: pd.DataFrame, cfg: RunConfig, title: str = "Clipped Energy
     ax.legend(); fig.tight_layout()
     return fig
 
-def plot_grid(res: pd.DataFrame, cfg: RunConfig, title: str = "Grid Charging/Discharging") -> plt.Figure:
+def plot_grid(res: pd.DataFrame, cfg: RunConfig, title: str = "Grid Charging/Discharging") -> Figure:
     """
     Plot grid import (charging) and export (discharging) over time.
 
@@ -117,7 +122,7 @@ def plot_grid(res: pd.DataFrame, cfg: RunConfig, title: str = "Grid Charging/Dis
     ax.legend(); fig.tight_layout()
     return fig
 
-def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title: str = "Revenue Over Time") -> plt.Figure:
+def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title: str = "Revenue Over Time") -> Figure:
     """
     Plot cumulative revenue over time, with market price overlay.
 
@@ -147,6 +152,11 @@ def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title: str = "Revenue Over T
         ax2.legend(lines + lines2, labels + labels2, loc="upper left")
         fig.tight_layout()
         return fig
+    else:
+        fig, ax = plt.subplots(figsize=(14,5))
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "No price data available", ha="center", va="center")
+        return fig
 
 def plot_dispatch_plotly(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch (All Metrics)") -> go.Figure:
     """
@@ -167,10 +177,12 @@ def plot_dispatch_plotly(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispat
         fig.add_trace(go.Scatter(x=t, y=res["Solar (MW)"], mode='lines', name='Solar', line=dict(color='yellow')))
     if "Wind (MW)" in res:
         fig.add_trace(go.Scatter(x=t, y=res["Wind (MW)"], mode='lines', name='Wind', line=dict(color='orange')))
+    if "NatGas (MW)" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["NatGas (MW)"], mode='lines', name='NatGas', line=dict(color='grey')))
     if "discharge1" in res and "charge1" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["discharge1"] - res["charge1"], mode='lines', name='Battery 1', line=dict(color='blue')))
+        fig.add_trace(go.Scatter(x=t, y=res["discharge1"] - res["charge1"], mode='lines', name='Battery 1', line=dict(color='lightblue'), opacity=0.5))
     if "discharge2" in res and "charge2" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["discharge2"] - res["charge2"], mode='lines', name='Battery 2', line=dict(color='green')))
+        fig.add_trace(go.Scatter(x=t, y=res["discharge2"] - res["charge2"], mode='lines', name='Battery 2', line=dict(color='lightgreen'), opacity=0.5))
     if "grid_exp" in res and "grid_imp" in res:
         fig.add_trace(go.Scatter(x=t, y=res["grid_exp"] - res["grid_imp"], mode='lines', name='Grid import/export', line=dict(color='brown')))
     if "load" in res:
@@ -188,8 +200,9 @@ def plot_dispatch_plotly(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispat
         fig.add_trace(go.Scatter(x=t, y=[-POI]*len(t), mode='lines', name='POI limit', line=dict(color='red', dash='dash')))
     # Add any other time series columns
     for col in res.columns:
-        if col not in ["Solar (MW)", "Wind (MW)", "discharge1", "charge1", "discharge2", "charge2", "grid_exp", "grid_imp", "load", "price", "revenue_t", "clipped"]:
-            if np.issubdtype(res[col].dtype, np.number):
+        if col not in ["Solar (MW)", "Wind (MW)", "NatGas (MW)", "discharge1", "charge1", "discharge2", "charge2", "grid_exp", "grid_imp", "load", "price", "revenue_t", "clipped"]:
+            # Use dtype.type to avoid ExtensionDtype issues
+            if np.issubdtype(res[col].dtype.type, np.number):
                 fig.add_trace(go.Scatter(x=t, y=res[col], mode='lines', name=col))
     fig.update_layout(title=title, xaxis_title="Time", yaxis_title="Value (various units)", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig

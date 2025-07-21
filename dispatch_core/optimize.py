@@ -56,7 +56,7 @@ def run_lp(
         assert 0 <= blend_lambda <= 1, "blend_lambda must be between 0 and 1."
 
     # Prepare input series
-    gen   = df["Wind (MW)"].fillna(0) + df["Solar (MW)"].fillna(0)
+    gen   = df["Wind (MW)"].fillna(0) + df["Solar (MW)"].fillna(0) + df["NatGas (MW)"].fillna(0)
     if "Load (MW)" in df.columns:
         load = df["Load (MW)"]
     else:
@@ -199,7 +199,8 @@ def run_lp(
     revenue_tot = ((grid_exp - grid_imp) * price_arr).sum() / 1000
     total_wind = float(df["Wind (MW)"].fillna(0).sum(skipna=True))
     total_solar = float(df["Solar (MW)"].fillna(0).sum(skipna=True))
-    total_gen = total_wind + total_solar
+    total_natgas = float(df["NatGas (MW)"].fillna(0).sum(skipna=True))
+    total_gen = total_wind + total_solar + total_natgas
     green_gen_over_load_pct = (total_gen / total_load * 100) if total_load > 0 else 0.0
     resilience_pct = round(served / total_load * 100, 2) if total_load > 0 else 0.0
     total_charge = float(res["charge"].sum(skipna=True)) if "charge" in res else 0.0
@@ -272,7 +273,7 @@ def run_lp(
             sanity_errors.append("Grid import/export nonzero when grid is off")
     # 5. serve never exceeds cumulative generation (over period)
     if not grid_allowed and mode != "grid_on_max_revenue":
-        if res["serve"].sum() > (df["Wind (MW)"].clip(lower=0).sum() + df["Solar (MW)"].clip(lower=0).sum()) + 1e-6:
+        if res["serve"].sum() > (df["Wind (MW)"].clip(lower=0).sum() + df["Solar (MW)"].clip(lower=0).sum() + df["NatGas (MW)"].clip(lower=0).sum()) + 1e-6:
             sanity_errors.append("Total served exceeds total available generation")
     sanity_check_passed = len(sanity_errors) == 0
     mets["sanity_check_passed"] = sanity_check_passed
@@ -304,7 +305,7 @@ def tradeoff_analysis(
     if slack_list is None:
         slack_list = [0.00, 0.01, 0.02, 0.03, 0.05, 0.06, 0.07, 0.09]
     # --- Phase 1: Maximize resilience ---
-    gen = df["Wind (MW)"].fillna(0) + df["Solar (MW)"].fillna(0)
+    gen = df["Wind (MW)"].fillna(0) + df["Solar (MW)"].fillna(0) + df["NatGas (MW)"].fillna(0)
     load = generate(pd.DatetimeIndex(df.index), cfg)
     price = df[cfg.market_price_col]
     T = len(df)

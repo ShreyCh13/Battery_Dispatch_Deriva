@@ -104,3 +104,26 @@ For questions, suggestions, or contributions, please contact:
 ---
 
 Enjoy optimizing your battery dispatch! 
+
+---
+
+## Fixed Schedule Mode
+
+**New Feature:** You can now manually specify a fixed charge/discharge schedule for the battery, instead of running optimization.
+
+- **How to use:**
+  - Select 'Fixed Schedule' in the sidebar mode selector.
+  - Enter 'C' for charge, 'D' for discharge, or leave blank for idle in the editable grid.
+  - The model will charge/discharge at the maximum allowed rate, limited by battery power, energy, and round-trip efficiency (RTE).
+  - No optimization is performed in this mode.
+
+- **Results:**
+  - You will see a dispatch overview plot, revenue, shift %, cycles, and other key metrics.
+  - Download the full time-series results as CSV.
+  - A summary note will indicate that this run used a fixed schedule and enforced all battery constraints.
+
+- **Why use this?**
+  - Explore the impact of custom/manual battery schedules.
+  - Test scenarios and visualize results without optimization.
+
+--- 

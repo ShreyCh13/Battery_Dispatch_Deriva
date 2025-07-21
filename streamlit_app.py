@@ -86,6 +86,9 @@ with st.sidebar.expander("? Data format help"):
 user_df = None
 user_data_source = "synthetic"
 d_from, d_to = None, None  # Will be set after date selection
+solar_present = False
+wind_present = False
+natgas_present = False
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith(".csv"):
@@ -118,6 +121,22 @@ if uploaded_file is not None:
                     filled_cols.append(col)
             for col in optional_cols:
                 df_up[col] = df_up[col].fillna(0.0)
+            # Track which columns are present
+            solar_present = "Solar (MW)" in df_up.columns and not df_up["Solar (MW)"].isnull().all().item() if "Solar (MW)" in df_up.columns else False
+            wind_present = "Wind (MW)" in df_up.columns and not df_up["Wind (MW)"].isnull().all().item() if "Wind (MW)" in df_up.columns else False
+            natgas_present = "NatGas (MW)" in df_up.columns and not df_up["NatGas (MW)"].isnull().all().item() if "NatGas (MW)" in df_up.columns else False
+            # Add toggles for each source
+            st.sidebar.markdown("**Select generation sources to use:**")
+            use_solar = st.sidebar.toggle("Use Solar", value=solar_present)
+            use_wind = st.sidebar.toggle("Use Wind", value=wind_present)
+            use_natgas = st.sidebar.toggle("Use NatGas", value=natgas_present)
+            # Apply toggles: if OFF, set column to zero
+            if not use_solar:
+                df_up["Solar (MW)"] = 0.0
+            if not use_wind:
+                df_up["Wind (MW)"] = 0.0
+            if not use_natgas:
+                df_up["NatGas (MW)"] = 0.0
             # Check for missing values in required columns (excluding Datetime)
             req_cols_no_dt = [col for col in required_cols if col != "Datetime"]
             missing_vals = df_up[req_cols_no_dt].isnull().any()
@@ -173,6 +192,21 @@ else:
     if not isinstance(user_df.index, pd.DatetimeIndex):
         user_df.index = pd.to_datetime(user_df.index)
     user_data_source = "template"
+    # Track which columns are present
+    solar_present = "Solar (MW)" in user_df.columns and not user_df["Solar (MW)"].isnull().all().item() if "Solar (MW)" in user_df.columns else False
+    wind_present = "Wind (MW)" in user_df.columns and not user_df["Wind (MW)"].isnull().all().item() if "Wind (MW)" in user_df.columns else False
+    natgas_present = "NatGas (MW)" in user_df.columns and not user_df["NatGas (MW)"].isnull().all().item() if "NatGas (MW)" in user_df.columns else False
+    st.sidebar.markdown("**Select generation sources to use:**")
+    use_solar = st.sidebar.toggle("Use Solar", value=solar_present)
+    use_wind = st.sidebar.toggle("Use Wind", value=wind_present)
+    use_natgas = st.sidebar.toggle("Use NatGas", value=natgas_present)
+    # Apply toggles: if OFF, set column to zero
+    if not use_solar:
+        user_df["Solar (MW)"] = 0.0
+    if not use_wind:
+        user_df["Wind (MW)"] = 0.0
+    if not use_natgas:
+        user_df["NatGas (MW)"] = 0.0
     min_date = get_date_safe(user_df.index.min())
     max_date = get_date_safe(user_df.index.max())
     # Ensure min_date and max_date are datetime.date
@@ -258,32 +292,40 @@ batt2_power = st.sidebar.number_input("Battery 2 Power MW", 0.0, 2000.0, 0.0, 10
 batt2_dur   = st.sidebar.number_input("Battery 2 Duration h", 0.0, 1000.0, 0.0, 0.5)
 batt2_rte   = st.sidebar.number_input("Battery 2 RTE", 0.5, 1.0, 0.86, 0.01)
 
-# ── Sidebar: POI and grid flag ───────────────────────────────
-st.sidebar.header("4 · POI / Grid")
-poi_limit  = st.sidebar.number_input("POI limit MW", 1.0, 5000.0, 250.0, 10.0)
-
-grid_on = st.sidebar.toggle(
-    "Allow grid import/export",
-    value=False,
-    help="If ON, all load is served and the optimizer maximizes net revenue. If OFF, the optimizer maximizes load served (resilience)."
+# ── Sidebar: Mode selection ─────────────────────────────────────────
+mode = st.sidebar.radio(
+    "Mode",
+    ["Optimized Dispatch", "Fixed Schedule"],
+    help="Choose 'Fixed Schedule' to manually enter a charge/discharge schedule instead of running optimization."
 )
 
-# ── Sidebar: optimisation objective ──────────────────────────
-st.sidebar.header("5 · Optimisation")
-if grid_on:
-    st.sidebar.info("**Objective:** Maximize net revenue (all load is served)")
-else:
-    st.sidebar.info("**Objective:** Maximize load served (Resilience)")
-
-tradeoff_toggle = False
-if not grid_on:
-    tradeoff_toggle = st.sidebar.checkbox(
-        "Show trade-off analysis (resilience vs. revenue)",
+# --- Only show optimization controls if in Optimized Dispatch mode ---
+st.sidebar.header("4 · POI / Grid")
+poi_limit  = st.sidebar.number_input("POI limit MW", 1.0, 5000.0, 250.0, 10.0)
+if mode == "Optimized Dispatch":
+    grid_on = st.sidebar.toggle(
+        "Allow grid import/export",
         value=False,
-        help="Explore the trade-off between resilience and revenue (only available when grid is OFF)."
+        help="If ON, all load is served and the optimizer maximizes net revenue. If OFF, the optimizer maximizes load served (resilience)."
     )
-
-run = st.sidebar.button("🚀 Run optimisation")
+    # ── Sidebar: optimisation objective ──────────────────────────
+    st.sidebar.header("5 · Optimisation")
+    if grid_on:
+        st.sidebar.info("**Objective:** Maximize net revenue (all load is served)")
+    else:
+        st.sidebar.info("**Objective:** Maximize load served (Resilience)")
+    tradeoff_toggle = False
+    if not grid_on:
+        tradeoff_toggle = st.sidebar.checkbox(
+            "Show trade-off analysis (resilience vs. revenue)",
+            value=False,
+            help="Explore the trade-off between resilience and revenue (only available when grid is OFF)."
+        )
+    run = st.sidebar.button("🚀 Run optimisation")
+else:
+    grid_on = False
+    tradeoff_toggle = False
+    run = False
 
 # If using synthetic data, keep date window selection
 if user_data_source == "synthetic":
@@ -307,6 +349,50 @@ if user_data_source == "synthetic":
 else:
     # d_from and d_to already set above for uploaded/template
     pass
+
+# --- Always build run_cfg before any data loading or simulation ---
+from pathlib import Path
+run_cfg = None
+if mode == "Optimized Dispatch":
+    poi_limit_val = poi_limit if poi_limit is not None else 250.0
+    run_cfg = cfg.RunConfig(
+        path           = Path("template_may2015.csv" if user_data_source == "template" else "uploaded.csv"),
+        sheet_name     = user_data_source,
+        start_date     = str(d_from),
+        end_date       = str(d_to),
+        load_mw        = load_mw,
+        load_std       = load_std,
+        load_type      = cast(Literal['24-7', '16-7', 'random', 'random_16-7'], load_type_value),
+        battery_power_mw   = batt_power,
+        battery_duration_h = batt_dur,
+        battery_count      = 1,
+        rte                = batt_rte,
+        battery2_power_mw     = batt2_power,
+        battery2_duration_h   = batt2_dur,
+        battery2_rte          = batt2_rte,
+        poi_limit_mw       = poi_limit_val,
+        market_price_col   = "Market Price ($/MWh)",
+    )
+else:
+    # Fixed Schedule mode: always use a valid float for poi_limit_mw
+    run_cfg = cfg.RunConfig(
+        path           = Path("template_may2015.csv"),
+        sheet_name     = "FixedSchedule",
+        start_date     = str(d_from),
+        end_date       = str(d_to),
+        load_mw        = load_mw,
+        load_std       = load_std,
+        load_type      = cast(Literal['24-7', '16-7', 'random', 'random_16-7'], load_type_value),
+        battery_power_mw=batt_power,
+        battery_duration_h=batt_dur,
+        battery_count=1,
+        rte=batt_rte,
+        battery2_power_mw=batt2_power,
+        battery2_duration_h=batt2_dur,
+        battery2_rte=batt2_rte,
+        poi_limit_mw=250.0,  # Always a float
+        market_price_col="Market Price ($/MWh)",
+    )
 
 # Always build config and load data before main workflow
 try:
@@ -343,7 +429,7 @@ try:
                 battery2_power_mw     = batt2_power,
                 battery2_duration_h   = batt2_dur,
                 battery2_rte          = batt2_rte,
-                poi_limit_mw       = poi_limit,
+                poi_limit_mw       = (poi_limit if poi_limit is not None else 250.0),
                 market_price_col   = "Market Price ($/MWh)",
             )
             from dispatch_core.profiles import generate
@@ -369,7 +455,7 @@ try:
                 battery2_power_mw     = batt2_power,
                 battery2_duration_h   = batt2_dur,
                 battery2_rte          = batt2_rte,
-                poi_limit_mw       = poi_limit,
+                poi_limit_mw       = (poi_limit if poi_limit is not None else 250.0),
                 market_price_col   = "Market Price ($/MWh)",
             )
         # === FIX: Use user_df directly for uploaded files, otherwise load from disk ===
@@ -393,6 +479,28 @@ except Exception as e:
 
 # ── Main workflow ────────────────────────────────────────────
 if run and df is not None and run_cfg is not None:
+    # In the main workflow, ensure poi_limit is always a float for RunConfig
+    # For Optimized Dispatch, use the sidebar value; for Fixed Schedule, use a default
+    poi_limit_val = poi_limit if poi_limit is not None else 250.0
+    run_cfg = cfg.RunConfig(
+        path           = Path("template_may2015.csv" if user_data_source == "template" else "uploaded.csv"),
+        sheet_name     = user_data_source if mode == "Optimized Dispatch" else "FixedSchedule",
+        start_date     = str(d_from),
+        end_date       = str(d_to),
+        load_mw        = load_mw,
+        load_std       = load_std,
+        load_type      = cast(Literal['24-7', '16-7', 'random', 'random_16-7'], load_type_value),
+        battery_power_mw   = batt_power,
+        battery_duration_h = batt_dur,
+        battery_count      = 1,
+        rte                = batt_rte,
+        battery2_power_mw     = batt2_power,
+        battery2_duration_h   = batt2_dur,
+        battery2_rte          = batt2_rte,
+        poi_limit_mw       = poi_limit_val,
+        market_price_col   = "Market Price ($/MWh)",
+    )
+
     if grid_on:
         st.subheader("Grid ON: Maximize Revenue with 100% Load Served")
         start_time = time.time()
@@ -527,3 +635,137 @@ if run and df is not None and run_cfg is not None:
                 dispatch_df = dispatch_dict[float(selected_slack)/100.0]
                 st.dataframe(dispatch_df, use_container_width=True)
                 st.download_button(f"Download dispatch for slack {selected_slack}% (CSV)", dispatch_df.to_csv(), f"dispatch_slack_{selected_slack}.csv")
+
+# ── Fixed Schedule UI and Logic (CSV Template Workflow) ─────────────
+if mode == "Fixed Schedule":
+    st.sidebar.header("6 · Fixed Schedule Input")
+    st.sidebar.markdown(
+        """
+        **Instructions:** Download the schedule template, fill in 'C' for charge, 'D' for discharge, or leave blank for idle in Excel (months as rows, hours as columns). Upload the filled file below. The model will charge/discharge at the maximum allowed rate, limited by battery power, energy, and efficiency (RTE). No optimization is performed in this mode.
+        """
+    )
+    import calendar
+    import io
+    # --- Generate default template (months as rows, hours as columns) ---
+    # Use the user's provided schedule as the default template
+    import numpy as np
+    default_schedule = [
+        # Month 1-12, hours 0-23 (copy from the user's image)
+        # Each row is a month, each column is an hour
+        # Example for 12 months, 24 hours (replace with actual C/D/blank grid from the image)
+        [ '', '', '', '', '', '', '', '', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Jan
+        [ '', '', '', '', '', '', '', '', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Feb
+        [ '', '', '', '', '', '', '', '', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Mar
+        [ '', '', '', '', '', '', '', '', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Apr
+        [ '', '', '', '', '', '', '', '', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # May
+        [ '', '', '', '', '', '', '', '', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Jun
+        [ '', '', '', '', '', '', 'D', 'D', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Jul
+        [ '', '', '', '', '', '', 'D', 'D', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Aug
+        [ '', '', '', '', '', '', 'D', 'D', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Sep
+        [ '', '', '', '', '', '', 'D', 'D', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Oct
+        [ '', '', '', '', '', '', 'D', 'D', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Nov
+        [ '', '', '', '', '', '', 'D', 'D', '', '', 'C', 'C', 'C', 'C', 'C', '', 'D', 'D', 'D', '', '', '', '', '' ],  # Dec
+    ]
+    months = list(range(1, 13))
+    hours = list(range(0, 24))
+    template_df = pd.DataFrame(default_schedule, index=months, columns=hours)
+    template_df.index.name = 'Month'
+    template_df.columns.name = 'Hour'
+    # --- Download button for template ---
+    csv_buf = io.StringIO()
+    template_df.to_csv(csv_buf)
+    st.download_button(
+        label="Download Schedule Template (CSV)",
+        data=csv_buf.getvalue(),
+        file_name="fixed_schedule_template.csv",
+        mime="text/csv"
+    )
+    # --- File uploader for filled schedule ---
+    uploaded_schedule = st.file_uploader(
+        "Upload your filled schedule CSV (months as rows, hours as columns)",
+        type=["csv"],
+        key="fixed_schedule_upload"
+    )
+    # --- Parse uploaded or default schedule ---
+    if uploaded_schedule is not None:
+        schedule_df = pd.read_csv(uploaded_schedule, index_col=0)
+        st.success("Schedule uploaded and parsed successfully.")
+    else:
+        schedule_df = template_df.copy()
+        st.info("No schedule uploaded. Using default schedule (see below).")
+    # --- Show the schedule grid (editable for minor tweaks) ---
+    st.markdown("**You can make minor edits below. For large changes, use Excel and re-upload.**")
+    schedule_df = st.data_editor(
+        schedule_df,
+        use_container_width=True,
+        key="fixed_schedule_editor_editable"
+    )
+    # --- Ensure index and columns are strings for robust access ---
+    schedule_df.index = schedule_df.index.map(str)
+    schedule_df.columns = schedule_df.columns.map(str)
+    # --- Convert schedule to long-form DataFrame for simulation ---
+    # Repeat the schedule for every year in the simulation window
+    import calendar
+    schedule_long = []
+    # Determine all years in the simulation window
+    if d_from and d_to:
+        years = range(d_from.year, d_to.year + 1)
+    else:
+        years = [2015]
+    for year in years:
+        for month in schedule_df.index:
+            for hour in schedule_df.columns:
+                val = schedule_df.loc[str(month), str(hour)] if str(hour) in schedule_df.columns else ''
+                try:
+                    days_in_month = calendar.monthrange(int(year), int(month))[1]
+                except Exception:
+                    continue
+                for day in range(1, days_in_month + 1):
+                    try:
+                        dt = pd.Timestamp(year=int(year), month=int(month), day=day, hour=int(hour))
+                        # Only include if in selected window
+                        if d_from and d_to and (dt.date() < d_from or dt.date() > d_to):
+                            continue
+                        schedule_long.append({
+                            'Datetime': dt,
+                            'action': str(val).strip().upper() if pd.notnull(val) else ''
+                        })
+                    except Exception:
+                        continue
+    schedule_long_df = pd.DataFrame(schedule_long).set_index('Datetime')
+    # --- Align with user_df index (if available) ---
+    if user_df is not None:
+        # Only keep datetimes present in user_df
+        schedule_long_df = schedule_long_df.reindex(user_df.index)
+    # --- Run simulation ---
+    run_fixed = st.sidebar.button("🚀 Run Fixed Schedule Simulation")
+    if run_fixed:
+        from dispatch_core.simulate import simulate_fixed_schedule
+        if user_df is not None:
+            df = user_df.copy()
+        else:
+            df = data_io.load_data(run_cfg)
+        try:
+            res, mets = simulate_fixed_schedule(df, run_cfg, schedule_long_df)
+        except Exception as e:
+            st.error(f"⚠️ Fixed schedule simulation failed: {e}")
+            st.stop()
+        st.subheader("Fixed Schedule: Dispatch Overview")
+        st.info(mets["note"])
+        # Plot dispatch without grid import/export line for fixed schedule
+        fig = reporting.plot_dispatch(res, run_cfg, title="Dispatch (Fixed Schedule)", show_grid=False)
+        st.pyplot(fig)
+        st.subheader("Battery State of Charge (SOC)")
+        fig_soc = reporting.plot_soc(res, run_cfg, title="Battery State of Charge (Fixed Schedule)")
+        st.pyplot(fig_soc)
+        st.subheader("Key Metrics")
+        st.dataframe(pd.Series(mets).to_frame("Value").T, use_container_width=True)
+        if 'revenue_$' in mets:
+            st.markdown(f"**Revenue:** ${mets['revenue_$']:,.2f}")
+        st.markdown(f"**Shift %:** {mets['shift_pct']}% of total generation shifted by battery")
+        st.markdown(f"**Cycles:** {mets['cycles_battery1']}")
+        st.subheader("Download Results")
+        case_label = f"dispatch_fixed_schedule_{str(d_from)}_{str(d_to)}.csv"
+        csv = res.to_csv().encode()
+        st.download_button("⬇️ Time‑series CSV", csv, case_label)
+        st.stop()
