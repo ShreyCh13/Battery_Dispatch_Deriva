@@ -47,17 +47,21 @@ def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch", sh
         colors=["yellow", "orange", "grey", "lightblue", "lightgreen"],
         alpha=0.6
     )
-    # Plot grid import/export as a line (always show)
-    # ax.plot(t, grid, color="brown", label="Grid import/export", linewidth=1.5)
     # Plot POI limits if available
     if POI is not None and POI > 0:
         ax.axhline(POI, color='red', linestyle='--', label='POI limit')
-        ax.axhline(-POI, color='red', linestyle='--')
+        if show_grid:
+            ax.axhline(-POI, color='red', linestyle='--')
+    # Plot grid import/export as a line (always show)
+    # ax.plot(t, grid, color="brown", label="Grid import/export", linewidth=1.5)
     ax.plot(t, res["load"], color="black", linewidth=1, label="Load")
     # Place legend above the plot, outside the axes
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.15), ncol=3)
     ax.set_xlabel("Time"); ax.set_ylabel("Power (MW)")
     ax.set_title(title); fig.tight_layout()
+    # Set y-axis lower limit to 0 in fixed schedule mode
+    if not show_grid:
+        ax.set_ylim(bottom=0)
     return fig
 
 def plot_soc(res: pd.DataFrame, cfg: RunConfig, title: str = "Battery State of Charge") -> Figure:
