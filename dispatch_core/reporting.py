@@ -50,8 +50,6 @@ def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch", sh
     # Plot POI limits if available
     if POI is not None and POI > 0:
         ax.axhline(POI, color='red', linestyle='--', label='POI limit')
-        if show_grid:
-            ax.axhline(-POI, color='red', linestyle='--')
     # Plot grid import/export as a line (always show)
     # ax.plot(t, grid, color="brown", label="Grid import/export", linewidth=1.5)
     ax.plot(t, res["load"], color="black", linewidth=1, label="Load")
@@ -201,7 +199,6 @@ def plot_dispatch_plotly(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispat
     POI = getattr(cfg, 'poi_limit_mw', None)
     if POI is not None and POI > 0:
         fig.add_trace(go.Scatter(x=t, y=[POI]*len(t), mode='lines', name='POI limit', line=dict(color='red', dash='dash')))
-        fig.add_trace(go.Scatter(x=t, y=[-POI]*len(t), mode='lines', name='POI limit', line=dict(color='red', dash='dash')))
     # Add any other time series columns
     for col in res.columns:
         if col not in ["Solar (MW)", "Wind (MW)", "NatGas (MW)", "discharge1", "charge1", "discharge2", "charge2", "grid_exp", "grid_imp", "load", "price", "revenue_t", "clipped"]:

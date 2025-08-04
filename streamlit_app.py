@@ -458,8 +458,8 @@ try:
                 poi_limit_mw       = (poi_limit if poi_limit is not None else 250.0),
                 market_price_col   = "Market Price ($/MWh)",
             )
-        # === FIX: Use user_df directly for uploaded files, otherwise load from disk ===
-        if user_data_source == "uploaded":
+        # === FIX: Use user_df directly for both uploaded files and template ===
+        if user_data_source in ["uploaded", "template"]:
             df = user_df.copy()
         else:
             df = data_io.load_data(run_cfg)
