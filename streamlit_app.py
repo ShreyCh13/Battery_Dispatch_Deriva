@@ -147,8 +147,10 @@ if uploaded_file is not None:
                 missing_vals = pd.Series(missing_vals, index=req_cols_no_dt)
                 missing_cols = list(missing_vals[missing_vals].index)
             if len(missing_cols) > 0:
-                st.error(f"Missing values in required columns: {missing_cols}. Please fix your file.")
-            else:
+                # Fill missing required values with zeros instead of raising an error
+                df_up[missing_cols] = df_up[missing_cols].fillna(0.0)
+                st.info(f"Filled missing values in required columns with zeros: {missing_cols}")
+            # From here on we proceed with further processing for both cases
                 import pandas as pd
                 user_df = pd.DataFrame(df_up)
                 user_data_source = "uploaded"
@@ -313,13 +315,13 @@ if mode == "Optimized Dispatch":
     if grid_on:
         st.sidebar.info("**Objective:** Maximize net revenue (all load is served)")
     else:
-        st.sidebar.info("**Objective:** Maximize load served (Resilience)")
+        st.sidebar.info("**Objective:** Maximize load served (Firmness)")
     tradeoff_toggle = False
     if not grid_on:
         tradeoff_toggle = st.sidebar.checkbox(
-            "Show trade-off analysis (resilience vs. revenue)",
+            "Show trade-off analysis (firmness vs. merchant revenue/cost)",
             value=False,
-            help="Explore the trade-off between resilience and revenue (only available when grid is OFF)."
+            help="Explore the trade-off between firmness and merchant revenue/cost (only available when grid is OFF)."
         )
     run = st.sidebar.button("🚀 Run optimisation")
 else:
@@ -502,16 +504,21 @@ if run and df is not None and run_cfg is not None:
     )
 
     if grid_on:
+        spill_label = "Clipped Energy"  # label for grid-on case
         st.subheader("Grid ON: Maximize Revenue with 100% Load Served")
         start_time = time.time()
-        st.markdown(r"""
-        **All load is served (100% resilience).**
-        The optimizer maximizes net revenue:
-        $$
-        \text{Revenue} = \sum_t \left( \text{Grid Export}_t \times \text{Price}_t - \text{Grid Import}_t \times \text{Price}_t \right)
-        $$
-        (Units: $)
-        """)
+        with st.expander("ℹ️ What does Grid ON optimisation do?"):
+            st.markdown(r"""
+            **Explanation – Grid ON mode (Merchant + Resilience)**  
+            • 100 % of the on-site load **must** be met every hour – no shedding.  
+            • The optimiser is free to **import** from or **export** to the grid (POI-limited).  
+            • Objective: maximise **Merchant Revenue / Cost**  
+            $$\text{Merchant} = \sum_t (\text{Export}_t-\text{Import}_t) \times \text{Price}_t$$  
+            • Positive ⇒ profit (net seller); negative ⇒ cost (net buyer).  
+            • Renewables/battery that serve load avoid an import and thus boost merchant value.  
+            • Excess renewables beyond load + export limit are **clipped**.  
+            • Battery may arbitrage prices so long as the POI limit is respected.
+            """)
         try:
             res, mets = optimize.run_lp(
                 df,
@@ -532,21 +539,21 @@ if run and df is not None and run_cfg is not None:
         st.subheader("Interactive Dispatch Dashboard")
         fig_plotly = reporting.plot_dispatch_plotly(res, run_cfg, title="Dispatch (All Metrics)")
         st.plotly_chart(fig_plotly, use_container_width=True)
-        st.subheader("Grid Import/Export and Revenue Time Series")
+        st.subheader("Grid Import/Export and Merchant Revenue/Cost Time Series")
         revenue_ts = (res["grid_exp"] * res["price"] - res["grid_imp"] * res["price"]) / 1000  # $/h
         res["revenue_t"] = revenue_ts
         st.line_chart(revenue_ts, use_container_width=True)
-        st.markdown(f"**Total Revenue:** ${revenue_ts.sum():,.2f}")
+        st.markdown(f"**Merchant Revenue / Cost:** ${revenue_ts.sum():,.2f}")
         st.subheader("Battery State of Charge")
         fig = reporting.plot_soc(res, run_cfg, title="Battery State of Charge")
         st.pyplot(fig)
-        st.subheader("Clipped Energy")
-        fig = reporting.plot_clipped(res, run_cfg, title="Clipped Energy")
+        st.subheader(spill_label)
+        fig = reporting.plot_clipped(res, run_cfg, title=spill_label)
         st.pyplot(fig)
-        st.subheader("Cumulative Revenue")
+        st.subheader("Cumulative Merchant Revenue / Cost")
         fig = reporting.plot_revenue(res, run_cfg, title="Revenue Over Time")
         st.pyplot(fig)
-        st.markdown(f"**Cumulative Revenue (final):** ${revenue_ts.cumsum().iloc[-1]:,.2f}")
+        st.markdown(f"**Cumulative Merchant Revenue / Cost (final):** ${revenue_ts.cumsum().iloc[-1]:,.2f}")
         with st.expander("Show entire dispatch DataFrame"):
             st.dataframe(res, height=400, use_container_width=True)
         case_label = f"dispatch_{'gridON' if grid_on else 'gridOFF'}_{str(d_from)}_{str(d_to)}.csv"
@@ -558,7 +565,8 @@ if run and df is not None and run_cfg is not None:
             zf.writestr("dispatch.csv", csv)
         st.download_button("⬇️ Everything (ZIP)", buf.getvalue(), "dispatch_results.zip")
     else:
-        st.subheader("Resilience Mode: Maximize Load Served")
+        spill_label = "Spilled Energy"  # label for grid-off case
+        st.subheader("Firmness Mode: Maximize Load Served")
         start_time = time.time()
         try:
             res, mets = optimize.run_lp(
@@ -580,14 +588,14 @@ if run and df is not None and run_cfg is not None:
         st.subheader("Battery State of Charge")
         fig = reporting.plot_soc(res, run_cfg, title="Battery State of Charge")
         st.pyplot(fig)
-        st.subheader("Clipped Energy")
-        fig = reporting.plot_clipped(res, run_cfg, title="Clipped Energy")
+        st.subheader(spill_label)
+        fig = reporting.plot_clipped(res, run_cfg, title=spill_label)
         st.pyplot(fig)
         if grid_on:
             st.subheader("Grid Charging/Discharging")
             fig = reporting.plot_grid(res, run_cfg, title="Grid Charging/Discharging")
             st.pyplot(fig)
-        st.subheader("Cumulative Revenue")
+        st.subheader("Cumulative Merchant Revenue / Cost")
         fig = reporting.plot_revenue(res, run_cfg, title="Revenue Over Time")
         st.pyplot(fig)
         with st.expander("Show entire dispatch DataFrame"):
@@ -603,24 +611,24 @@ if run and df is not None and run_cfg is not None:
 
         # Trade-off analysis (only if grid is OFF and toggle is enabled)
         if not grid_on and tradeoff_toggle:
-            st.subheader("Resilience vs Revenue Trade-off Analysis")
+            st.subheader("Firmness vs Merchant Revenue/Cost Trade-off Analysis")
             with st.spinner("Running trade-off analysis..."):
                 results_df, dispatch_dict = optimize.tradeoff_analysis(df, run_cfg)
             st.dataframe(results_df, use_container_width=True)
             fig, ax = plt.subplots()
-            ax.plot(results_df['resilience_%'], results_df['revenue_$'], marker='o', label='Trade-off Curve')
-            ax.set_xlabel('Resilience (%)')
-            ax.set_ylabel('Revenue ($)')
-            ax.set_title('Resilience vs Revenue for various slack levels')
+            ax.plot(results_df['firmness (%)'], results_df['Merchant Revenue/Cost'], marker='o', label='Trade-off Curve')
+            ax.set_xlabel('Firmness (%)')
+            ax.set_ylabel('Merchant Revenue/Cost ($)')
+            ax.set_title('Firmness vs Merchant Revenue/Cost for various slack levels')
             ax.grid(True)
             # Highlight the knee of the curve (max revenue increase per resilience loss)
-            diffs = results_df['revenue_$'].diff().fillna(0) / results_df['resilience_%'].diff().fillna(1)
+            diffs = results_df['Merchant Revenue/Cost'].diff().fillna(0) / results_df['firmness (%)'].diff().fillna(1)
             knee_idx = diffs.abs().idxmax()
-            ax.plot(results_df['resilience_%'][knee_idx], results_df['revenue_$'][knee_idx], 'ro', label='Knee (max trade-off)')
+            ax.plot(results_df['firmness (%)'][knee_idx], results_df['Merchant Revenue/Cost'][knee_idx], 'ro', label='Knee (max trade-off)')
             ax.legend()
             st.pyplot(fig)
-            st.markdown("**Knee of the curve:** Where a small loss in resilience gives a big gain in revenue.")
-            st.write(f"Knee at slack = {results_df['slack_%'][knee_idx]}%: Resilience = {results_df['resilience_%'][knee_idx]:.2f}%, Revenue = ${results_df['revenue_$'][knee_idx]:,.2f}")
+            st.markdown("**Knee of the curve:** Where a small loss in firmness gives a big gain in revenue.")
+            st.write(f"Knee at slack = {results_df['slack_%'][knee_idx]}%: Firmness = {results_df['firmness (%)'][knee_idx]:.2f}%, Revenue = ${results_df['Merchant Revenue/Cost'][knee_idx]:,.2f}")
             st.markdown("""
             **How is revenue calculated?**  
             For each slack value, the optimizer maximizes the sum over all timesteps of:
@@ -760,8 +768,8 @@ if mode == "Fixed Schedule":
         st.pyplot(fig_soc)
         st.subheader("Key Metrics")
         st.dataframe(pd.Series(mets).to_frame("Value").T, use_container_width=True)
-        if 'revenue_$' in mets:
-            st.markdown(f"**Revenue:** ${mets['revenue_$']:,.2f}")
+        if 'Merchant Revenue/Cost' in mets:
+            st.markdown(f"**Revenue:** ${mets['Merchant Revenue/Cost']:,.2f}")
         st.markdown(f"**Shift %:** {mets['shift_pct']}% of total generation shifted by battery")
         st.markdown(f"**Cycles:** {mets['cycles_battery1']}")
         st.subheader("Download Results")

@@ -145,8 +145,12 @@ def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title: str = "Revenue Over T
         ax.set_title(title)
         # Overlay market price on secondary y-axis
         ax2 = ax.twinx()
-        ax2.plot(t, res["price"], color="orange", label="Market Price ($/MWh)", linewidth=1.2, alpha=0.7)
-        ax2.set_ylabel("Market Price ($/MWh)", color="orange")
+        if "price_$/kWh" in res:
+            ax2.plot(t, res["price_$/kWh"], color="orange", label="Market Price ($/kWh)", linewidth=1.2, alpha=0.7)
+            ax2.set_ylabel("Market Price ($/kWh)", color="orange")
+        else:
+            ax2.plot(t, res["price"], color="orange", label="Market Price ($/MWh)", linewidth=1.2, alpha=0.7)
+            ax2.set_ylabel("Market Price ($/MWh)", color="orange")
         ax2.tick_params(axis='y', labelcolor="orange")
         # Add legends for both axes
         lines, labels = ax.get_legend_handles_labels()
@@ -174,36 +178,46 @@ def plot_dispatch_plotly(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispat
     """
     t = res.index
     fig = go.Figure()
-    # Add traces for each available metric
-    if "Solar (MW)" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["Solar (MW)"], mode='lines', name='Solar', line=dict(color='yellow')))
-    if "Wind (MW)" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["Wind (MW)"], mode='lines', name='Wind', line=dict(color='orange')))
-    if "NatGas (MW)" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["NatGas (MW)"], mode='lines', name='NatGas', line=dict(color='grey')))
-    if "discharge1" in res and "charge1" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["discharge1"] - res["charge1"], mode='lines', name='Battery 1', line=dict(color='lightblue'), opacity=0.5))
-    if "discharge2" in res and "charge2" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["discharge2"] - res["charge2"], mode='lines', name='Battery 2', line=dict(color='lightgreen'), opacity=0.5))
+    
+    # Default visible traces - only show net_to_grid and load by default
+    # Add net_to_grid (most important trace, shown by default)
     if "grid_exp" in res and "grid_imp" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["grid_exp"] - res["grid_imp"], mode='lines', name='Grid import/export', line=dict(color='brown')))
+        fig.add_trace(go.Scatter(x=t, y=res["grid_exp"] - res["grid_imp"], mode='lines', name='Net to Grid', line=dict(color='brown'), visible=True))
+    
+    # Add load for reference (shown by default)
     if "load" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["load"], mode='lines', name='Load', line=dict(color='black')))
-    if "price" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["price"], mode='lines', name='Market Price ($/MWh)', line=dict(color='purple', dash='dot')))
+        fig.add_trace(go.Scatter(x=t, y=res["load"], mode='lines', name='Load', line=dict(color='black'), visible=True))
+    
+    # Add market price in $/kWh (shown by default)
+    if "price_$/kWh" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["price_$/kWh"], mode='lines', name='Market Price ($/kWh)', line=dict(color='purple', dash='dot'), visible=True))
+    
+    # All other traces are hidden by default - user can enable them
+    if "Solar (MW)" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["Solar (MW)"], mode='lines', name='Solar', line=dict(color='yellow'), visible='legendonly'))
+    if "Wind (MW)" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["Wind (MW)"], mode='lines', name='Wind', line=dict(color='orange'), visible='legendonly'))
+    if "NatGas (MW)" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["NatGas (MW)"], mode='lines', name='NatGas', line=dict(color='grey'), visible='legendonly'))
+    if "discharge1" in res and "charge1" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["discharge1"] - res["charge1"], mode='lines', name='Battery 1', line=dict(color='lightblue'), opacity=0.5, visible='legendonly'))
+    if "discharge2" in res and "charge2" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["discharge2"] - res["charge2"], mode='lines', name='Battery 2', line=dict(color='lightgreen'), opacity=0.5, visible='legendonly'))
     if "revenue_t" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["revenue_t"].cumsum(), mode='lines', name='Cumulative Revenue ($)', line=dict(color='magenta', dash='dash')))
+        fig.add_trace(go.Scatter(x=t, y=res["revenue_t"].cumsum(), mode='lines', name='Cumulative Revenue ($)', line=dict(color='magenta', dash='dash'), visible='legendonly'))
     if "clipped" in res:
-        fig.add_trace(go.Scatter(x=t, y=res["clipped"], mode='lines', name='Clipped', line=dict(color='red', dash='dot')))
+        fig.add_trace(go.Scatter(x=t, y=res["clipped"], mode='lines', name='Clipped', line=dict(color='red', dash='dot'), visible='legendonly'))
     # Add POI limits if available
     POI = getattr(cfg, 'poi_limit_mw', None)
     if POI is not None and POI > 0:
-        fig.add_trace(go.Scatter(x=t, y=[POI]*len(t), mode='lines', name='POI limit', line=dict(color='red', dash='dash')))
-    # Add any other time series columns
+        fig.add_trace(go.Scatter(x=t, y=[POI]*len(t), mode='lines', name='POI limit', line=dict(color='red', dash='dash'), visible='legendonly'))
+    
+    # Add any other time series columns (hidden by default, avoid duplications)
     for col in res.columns:
-        if col not in ["Solar (MW)", "Wind (MW)", "NatGas (MW)", "discharge1", "charge1", "discharge2", "charge2", "grid_exp", "grid_imp", "load", "price", "revenue_t", "clipped"]:
+        if col not in ["Solar (MW)", "Wind (MW)", "NatGas (MW)", "discharge1", "charge1", "discharge2", "charge2", "grid_exp", "grid_imp", "load", "Load (MW)", "price", "price_$/kWh", "Market Price ($/MWh)", "revenue_t", "clipped", "net_to_grid"]:
             # Use dtype.type to avoid ExtensionDtype issues
             if np.issubdtype(res[col].dtype.type, np.number):
-                fig.add_trace(go.Scatter(x=t, y=res[col], mode='lines', name=col))
+                fig.add_trace(go.Scatter(x=t, y=res[col], mode='lines', name=col, visible='legendonly'))
+    
     fig.update_layout(title=title, xaxis_title="Time", yaxis_title="Value (various units)", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig

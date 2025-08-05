@@ -97,6 +97,7 @@ def simulate_fixed_schedule(df: pd.DataFrame, cfg: RunConfig, schedule_df: pd.Da
     res["generation"] = gen.values
     res["load"] = load.values
     res["price"] = price.values
+    res["price_$/kWh"] = price.values / 1000  # Add price in $/kWh for display
     res["charge1"] = charge
     res["discharge1"] = discharge
     res["charge2"] = 0.0

@@ -92,7 +92,9 @@ def run_lp(
 
     # Objective function components
     grid_revenue = pulp.lpSum(price[t]*(ge[t]-gi[t]) for t in range(T))
-    resilience = pulp.lpSum(val*v[t] for t in range(T))
+    resilience    = pulp.lpSum(val*v[t] for t in range(T))
+    clipped_revenue = pulp.lpSum(price[t]*cl[t] for t in range(T))  # potential merchant revenue from clipped energy
+    LEX_WEIGHT = 1_000_000  # large weight to enforce lexicographic priority
 
     # Artificially high revenue for served load in 'resilience_first_blend' mode
     artificial_resilience_revenue = pulp.LpAffineExpression()
@@ -104,7 +106,8 @@ def run_lp(
     if mode == "blend":
         prob += blend_lambda*resilience + (1-blend_lambda)*grid_revenue
     elif mode == "resilience":
-        prob += resilience
+        # Lexicographic objective: maximise resilience first, then merchant revenue from clipped energy
+        prob += LEX_WEIGHT*resilience + clipped_revenue
     elif mode == "revenue":
         prob += grid_revenue
     elif mode == "resilience_first_blend":
@@ -164,6 +167,8 @@ def run_lp(
     # Only add 'price' if not already present, and remove any duplicate 'price' columns later
     if "price" not in res.columns:
         res["price"] = price.values
+    # Add price in $/kWh for display purposes
+    res["price_$/kWh"] = price.values / 1000
     # Battery 1
     res["charge1"]     = arr(c1)
     res["discharge1"]  = arr(d1)
@@ -233,9 +238,9 @@ def run_lp(
     grid_imp_arr = res["grid_imp"].to_numpy(dtype=float)
     grid_exp_arr = res["grid_exp"].to_numpy(dtype=float)
     mets = {
-        "resilience_pct": round(resilience_pct, 2),
-        "green_gen_over_load_pct": round(float(green_gen_over_load_pct), 2),
-        "revenue_$":      round(float(revenue_tot), 2),
+        "firmness (%)": round(resilience_pct, 2),
+        "TotalGen/TotalLoad": round(float(green_gen_over_load_pct), 2),
+        "Merchant Revenue/Cost":      round(float(revenue_tot), 2),
         "total_charge_mwh": round(float(charge_arr.sum()), 2),
         "total_clip_mwh": round(float(clipped_arr.sum()), 2),
         "total_gen_mwh": round(float(gen_arr.sum()), 2),
@@ -243,7 +248,6 @@ def run_lp(
         "total_served_mwh": round(served, 2),
         "grid_imp_mwh":   round(float(grid_imp_arr.sum()), 2),
         "grid_exp_mwh":   round(float(grid_exp_arr.sum()), 2),
-        "capex_$":        round(float(capex)),
         "cycles_battery1": round(float(cycles1), 2),
         "cycles_battery2": round(float(cycles2), 2),
     }
@@ -364,7 +368,7 @@ def tradeoff_analysis(
         total_load = float(load_arr.sum())
         revenue = sum(price.iloc[t] * (pulp.value(dis2[t]) - pulp.value(chg2[t]) + gen.iloc[t]) for t in range(T)) / 1000
         resilience_pct = served / total_load * 100.0 if total_load > 0 else 0.0
-        results.append({'slack_%': int(slack*100), 'resilience_%': resilience_pct, 'served_MWh': served, 'revenue_$': revenue})
+        results.append({'slack_%': int(slack*100), 'firmness (%)': resilience_pct, 'served_MWh': served, 'Merchant Revenue/Cost': revenue})
         # Save dispatch for this slack
         dispatch_df = pd.DataFrame({
             'serve': [pulp.value(serve2[t]) for t in range(T)],
@@ -373,6 +377,7 @@ def tradeoff_analysis(
             'soc': [pulp.value(soc2[t]) for t in range(T)],
             'gen': gen.values,
             'price': price.values,
+            'price_$/kWh': price.values / 1000,  # Add price in $/kWh for display
             'load': load.values,
         }, index=df.index)
         dispatch_dict[slack] = dispatch_df
