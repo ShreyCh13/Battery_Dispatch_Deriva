@@ -43,8 +43,8 @@ def get_date_safe(val):
         return datetime.date(2015, 1, 1)
 
 # ── Page set-up ───────────────────────────────────────────────
-st.set_page_config(page_title="Battery Dispatch", layout="wide")
-st.title("Battery Dispatch Optimiser")
+st.set_page_config(page_title="Deriva Storage Optimizer", layout="wide")
+st.title("Deriva Storage Optimizer")
 
 # ── Sidebar: Data source ─────────────────────────────────────
 st.sidebar.header("1 · Data source (upload or synthetic)")
