@@ -138,7 +138,7 @@ def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title: str = "Revenue Over T
     """
     t = res.index
     if "price" in res:
-        revenue = ((res["grid_exp"] - res["grid_imp"]) * res["price"]) / 1000  # $/h
+        revenue = ((res["grid_exp"] - res["grid_imp"]) * res["price"])  # $ (for hourly data: MW * $/MWh * 1h = $)
         fig, ax = plt.subplots(figsize=(14,5))
         ax.plot(t, revenue.cumsum(), label="Cumulative Revenue ($)", color="purple")
         ax.set_xlabel("Time"); ax.set_ylabel("Cumulative Revenue ($)")

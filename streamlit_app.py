@@ -540,7 +540,7 @@ if run and df is not None and run_cfg is not None:
         fig_plotly = reporting.plot_dispatch_plotly(res, run_cfg, title="Dispatch (All Metrics)")
         st.plotly_chart(fig_plotly, use_container_width=True)
         st.subheader("Grid Import/Export and Merchant Revenue/Cost Time Series")
-        revenue_ts = (res["grid_exp"] * res["price"] - res["grid_imp"] * res["price"]) / 1000  # $/h
+        revenue_ts = (res["grid_exp"] * res["price"] - res["grid_imp"] * res["price"])  # $ (for hourly data: MW * $/MWh * 1h = $)
         res["revenue_t"] = revenue_ts
         st.line_chart(revenue_ts, use_container_width=True)
         st.markdown(f"**Merchant Revenue / Cost:** ${revenue_ts.sum():,.2f}")

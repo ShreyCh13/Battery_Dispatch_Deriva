@@ -119,7 +119,7 @@ def simulate_fixed_schedule(df: pd.DataFrame, cfg: RunConfig, schedule_df: pd.Da
     grid_exp_sum = float(res["grid_exp"].sum(skipna=True))
     grid_imp_sum = float(res["grid_imp"].sum(skipna=True))
     price_arr = res["price"].to_numpy(dtype=float)
-    revenue_tot = ((res["grid_exp"] - res["grid_imp"]) * price_arr).sum() / 1000
+    revenue_tot = ((res["grid_exp"] - res["grid_imp"]) * price_arr).sum()  # $ (for hourly data: MW * $/MWh * 1h = $)
     total_charge = float(res["charge"].sum(skipna=True))
     total_discharge = float(res["discharge"].sum(skipna=True))
     cycles = total_discharge / Emax if Emax > 0 else 0.0

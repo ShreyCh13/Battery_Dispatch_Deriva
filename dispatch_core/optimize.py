@@ -201,7 +201,7 @@ def run_lp(
     grid_exp = res["grid_exp"].to_numpy(dtype=float)
     grid_imp = res["grid_imp"].to_numpy(dtype=float)
     price_arr = res["price"].to_numpy(dtype=float)
-    revenue_tot = ((grid_exp - grid_imp) * price_arr).sum() / 1000
+    revenue_tot = ((grid_exp - grid_imp) * price_arr).sum()  # $ (for hourly data: MW * $/MWh * 1h = $)
     total_wind = float(df["Wind (MW)"].fillna(0).sum(skipna=True))
     total_solar = float(df["Solar (MW)"].fillna(0).sum(skipna=True))
     total_natgas = float(df["NatGas (MW)"].fillna(0).sum(skipna=True))
@@ -224,7 +224,7 @@ def run_lp(
         clipped_arr = res["clipped"].to_numpy(dtype=float)
         price_arr = res["price"].to_numpy(dtype=float)
         if len(clipped_arr) == len(price_arr):
-            clipped_revenue = float((clipped_arr * price_arr).sum() / 1000)  # $/MWh to $
+            clipped_revenue = float((clipped_arr * price_arr).sum())  # $ (for hourly data: MW * $/MWh * 1h = $)
         else:
             clipped_revenue = None
     # Calculate number of cycles for each battery
@@ -366,7 +366,7 @@ def tradeoff_analysis(
         prob2.solve(pulp.PULP_CBC_CMD(msg=False))
         served = sum(pulp.value(serve2[t]) for t in range(T))
         total_load = float(load_arr.sum())
-        revenue = sum(price.iloc[t] * (pulp.value(dis2[t]) - pulp.value(chg2[t]) + gen.iloc[t]) for t in range(T)) / 1000
+        revenue = sum(price.iloc[t] * (pulp.value(dis2[t]) - pulp.value(chg2[t]) + gen.iloc[t]) for t in range(T))  # $ (for hourly data: MW * $/MWh * 1h = $)
         resilience_pct = served / total_load * 100.0 if total_load > 0 else 0.0
         results.append({'slack_%': int(slack*100), 'firmness (%)': resilience_pct, 'served_MWh': served, 'Merchant Revenue/Cost': revenue})
         # Save dispatch for this slack
