@@ -151,37 +151,37 @@ if uploaded_file is not None:
                 df_up[missing_cols] = df_up[missing_cols].fillna(0.0)
                 st.info(f"Filled missing values in required columns with zeros: {missing_cols}")
             # From here on we proceed with further processing for both cases
-                import pandas as pd
-                user_df = pd.DataFrame(df_up)
-                user_data_source = "uploaded"
-                # Ensure index is DatetimeIndex
-                if not isinstance(user_df.index, pd.DatetimeIndex):
-                    user_df.index = pd.to_datetime(user_df.index)
-                min_date = get_date_safe(user_df.index.min())
-                max_date = get_date_safe(user_df.index.max())
-                # Ensure min_date and max_date are datetime.date
-                import datetime
-                if not isinstance(min_date, datetime.date):
-                    min_date = datetime.date(2015, 1, 1)
-                if not isinstance(max_date, datetime.date):
-                    max_date = datetime.date(2015, 1, 1)
-                selected_dates = st.sidebar.date_input(
-                    "Date window for analysis",
-                    value=(min_date, max_date),
-                    min_value=min_date,
-                    max_value=max_date
-                )
-                if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
-                    d_from, d_to = selected_dates
-                else:
-                    st.error("Please select a valid start and end date.")
-                    st.stop()
-                mask = (user_df.index >= pd.to_datetime(d_from)) & (user_df.index <= pd.to_datetime(d_to))
-                user_df = user_df.loc[mask]
-                st.success("File uploaded and parsed successfully.")
-                st.dataframe(user_df.head(), use_container_width=True)
-                if filled_cols:
-                    st.info(f"Filled missing optional columns with zeros: {filled_cols}")
+            import pandas as pd
+            user_df = pd.DataFrame(df_up)
+            user_data_source = "uploaded"
+            # Ensure index is DatetimeIndex
+            if not isinstance(user_df.index, pd.DatetimeIndex):
+                user_df.index = pd.to_datetime(user_df.index)
+            min_date = get_date_safe(user_df.index.min())
+            max_date = get_date_safe(user_df.index.max())
+            # Ensure min_date and max_date are datetime.date
+            import datetime
+            if not isinstance(min_date, datetime.date):
+                min_date = datetime.date(2015, 1, 1)
+            if not isinstance(max_date, datetime.date):
+                max_date = datetime.date(2015, 1, 1)
+            selected_dates = st.sidebar.date_input(
+                "Date window for analysis",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date
+            )
+            if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+                d_from, d_to = selected_dates
+            else:
+                st.error("Please select a valid start and end date.")
+                st.stop()
+            mask = (user_df.index >= pd.to_datetime(d_from)) & (user_df.index <= pd.to_datetime(d_to))
+            user_df = user_df.loc[mask]
+            st.success("File uploaded and parsed successfully.")
+            st.dataframe(user_df.head(), use_container_width=True)
+            if filled_cols:
+                st.info(f"Filled missing optional columns with zeros: {filled_cols}")
     except Exception as e:
         st.error(f"Error reading file: {e}")
 else:
