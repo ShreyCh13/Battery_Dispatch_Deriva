@@ -176,7 +176,8 @@ if uploaded_file is not None:
             else:
                 st.error("Please select a valid start and end date.")
                 st.stop()
-            mask = (user_df.index >= pd.to_datetime(d_from)) & (user_df.index <= pd.to_datetime(d_to))
+            # Include entire end date by adding 1 day and using < instead of <=
+            mask = (user_df.index >= pd.to_datetime(d_from)) & (user_df.index < pd.to_datetime(d_to) + pd.Timedelta(days=1))
             user_df = user_df.loc[mask]
             st.success("File uploaded and parsed successfully.")
             st.dataframe(user_df.head(), use_container_width=True)
@@ -228,7 +229,8 @@ else:
     else:
         st.error("Please select a valid start and end date.")
         st.stop()
-    mask = (user_df.index >= pd.to_datetime(d_from)) & (user_df.index <= pd.to_datetime(d_to))
+    # Include entire end date by adding 1 day and using < instead of <=
+    mask = (user_df.index >= pd.to_datetime(d_from)) & (user_df.index < pd.to_datetime(d_to) + pd.Timedelta(days=1))
     user_df = user_df.loc[mask]
 
 # Warn if market price values look like $/kWh
