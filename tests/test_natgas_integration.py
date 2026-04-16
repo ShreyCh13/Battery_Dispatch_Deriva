@@ -104,6 +104,46 @@ class NatGasIntegrationTests(unittest.TestCase):
         ramps = np.abs(np.diff(res["gas_gen"].to_numpy(dtype=float)))
         self.assertTrue((ramps <= 5.0001).all())
 
+    def test_gas_runs_when_csv_natgas_column_is_zero(self):
+        """Regression: a zero-filled NatGas (MW) column must not silently
+        override a user-configured gas_pmax_mw."""
+        df = _sample_df()
+        df["NatGas (MW)"] = 0.0
+        cfg = _base_cfg().model_copy(
+            update={
+                "gas_enabled": True,
+                "gas_dispatchable": True,
+                "gas_pmax_mw": 50.0,
+                "gas_pmin_mw": 0.0,
+                "gas_var_cost_usd_per_mwh": 5.0,
+                "gas_use_profile_as_cap": False,
+            }
+        )
+        res, mets = run_lp(df, cfg, mode="resilience", grid_allowed=False)
+        self.assertGreater(float(res["gas_gen"].sum()), 0.0)
+        self.assertGreater(float(mets["total_natgas_mwh"]), 0.0)
+
+    def test_profile_cap_still_works_when_opted_in(self):
+        df = _sample_df()
+        df["NatGas (MW)"] = 0.0
+        cfg = _base_cfg().model_copy(
+            update={
+                "gas_enabled": True,
+                "gas_dispatchable": True,
+                "gas_pmax_mw": 50.0,
+                "gas_use_profile_as_cap": True,
+            }
+        )
+        res, _ = run_lp(df, cfg, mode="resilience", grid_allowed=False)
+        self.assertEqual(float(res["gas_gen"].sum()), 0.0)
+
+    def test_renewable_only_kpi_is_present(self):
+        df = _sample_df()
+        cfg = _base_cfg().model_copy(update={"gas_enabled": False})
+        _, mets = run_lp(df, cfg, mode="resilience", grid_allowed=False)
+        self.assertIn("renewable_gen_over_load_%", mets)
+        self.assertIn("TotalGen/TotalLoad", mets)
+
     def test_sizing_recommendation_has_target_solution(self):
         df = _sample_df()
         cfg = _base_cfg().model_copy(

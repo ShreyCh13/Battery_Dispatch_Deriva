@@ -24,7 +24,40 @@ import datetime
 from typing import cast, Literal
 import time
 
-# Helper to robustly extract date from index min/max
+def _gas_diagnostics_note(run_cfg, mets: dict, df_in: "pd.DataFrame | None") -> None:
+    """Surface a clear note when gas is enabled but produced no energy.
+
+    Explains the most likely root causes so the user isn't guessing why
+    nothing changed vs. the gas-off run.
+    """
+    if run_cfg is None or not getattr(run_cfg, "gas_enabled", False):
+        return
+    total_gas = float(mets.get("total_natgas_mwh", 0.0) or 0.0)
+    pmax = float(getattr(run_cfg, "gas_pmax_mw", 0.0) or 0.0)
+    if total_gas > 1e-6:
+        return
+
+    reasons = []
+    if pmax <= 0:
+        reasons.append("Gas capacity (`gas_pmax_mw`) is 0 - set it in section 3b.")
+    if not getattr(run_cfg, "gas_dispatchable", False):
+        reasons.append("Dispatchable is off and the NatGas (MW) column is empty/zero.")
+    served = float(mets.get("total_served_mwh", 0.0) or 0.0)
+    total_load = float(mets.get("total_load_mwh", 0.0) or 0.0)
+    if total_load > 0 and served >= total_load - 1e-6:
+        reasons.append("Load is already 100% served by renewables/battery, so gas was not needed.")
+    if df_in is not None and "NatGas (MW)" in df_in.columns:
+        col_sum = float(pd.to_numeric(df_in["NatGas (MW)"], errors="coerce").fillna(0.0).sum())
+        if col_sum <= 1e-9 and getattr(run_cfg, "gas_use_profile_as_cap", False):
+            reasons.append("`gas_use_profile_as_cap` is on and the NatGas (MW) column is all zeros - capacity is being clipped to 0.")
+    if not reasons:
+        reasons.append("Variable gas cost is high enough that running gas is not economic.")
+    st.info(
+        "Gas was enabled but produced 0 MWh. Likely reasons:\n- "
+        + "\n- ".join(reasons)
+    )
+
+
 def get_date_safe(val):
     import pandas as pd
     import datetime
@@ -332,54 +365,73 @@ with st.sidebar.expander("3b · Natural Gas Resource (optional)", expanded=False
         gas_startup_cost_usd = 0.0
 
 # ── Sidebar: Mode selection ─────────────────────────────────────────
-mode = st.sidebar.radio(
+# One Mode selector that maps 1:1 to real behaviour. No decorative presets.
+MODE_OPTIONS = [
+    "Grid-Off Firmness",
+    "Grid-On Revenue",
+    "Fixed Schedule",
+    "Gas Sizing Recommendation",
+]
+run_mode = st.sidebar.radio(
     "Mode",
-    ["Optimized Dispatch", "Fixed Schedule"],
-    help="Choose 'Fixed Schedule' to manually enter a charge/discharge schedule instead of running optimization."
+    MODE_OPTIONS,
+    index=0,
+    help=(
+        "Grid-Off Firmness: maximise load served with no grid.\n"
+        "Grid-On Revenue: serve 100% of load, maximise net merchant revenue.\n"
+        "Fixed Schedule: simulate a user-supplied charge/discharge schedule.\n"
+        "Gas Sizing Recommendation: sweep gas capacities and recommend a size."
+    ),
 )
 
-# --- Only show optimization controls if in Optimized Dispatch mode ---
+# Derive legacy flags from the single Mode control so the rest of the app
+# keeps working without a larger rewrite.
+mode = "Fixed Schedule" if run_mode == "Fixed Schedule" else "Optimized Dispatch"
+sizing_toggle = (run_mode == "Gas Sizing Recommendation")
+grid_on = (run_mode == "Grid-On Revenue")
+
 st.sidebar.header("4 · POI / Grid")
 poi_limit  = st.sidebar.number_input("POI limit MW", 1.0, 5000.0, 250.0, 10.0)
+
 if mode == "Optimized Dispatch":
-    grid_on = st.sidebar.toggle(
-        "Allow grid import/export",
-        value=False,
-        help="If ON, all load is served and the optimizer maximizes net revenue. If OFF, the optimizer maximizes load served (resilience)."
-    )
-    # ── Sidebar: optimisation objective ──────────────────────────
-    st.sidebar.header("5 · Optimisation")
-    run_preset = st.sidebar.selectbox(
-        "Preset",
-        ["FastSimple", "DispatchDetailed", "ReliabilityTarget", "CapacityRecommendation"],
-        index=0,
-        help="Keeps default flow simple while exposing advanced options when needed.",
-    )
-    if grid_on:
-        st.sidebar.info("**Objective:** Maximize net revenue (all load is served)")
+    if run_mode == "Grid-On Revenue":
+        st.sidebar.info("**Objective:** Maximise net revenue (all load is served)")
+    elif run_mode == "Grid-Off Firmness":
+        st.sidebar.info("**Objective:** Maximise load served (Firmness)")
     else:
-        st.sidebar.info("**Objective:** Maximize load served (Firmness)")
+        st.sidebar.info("**Objective:** Sweep gas capacity, pick recommended size")
+
     tradeoff_toggle = False
-    if not grid_on:
+    if run_mode == "Grid-Off Firmness":
         tradeoff_toggle = st.sidebar.checkbox(
             "Show trade-off analysis (firmness vs. merchant revenue/cost)",
             value=False,
-            help="Explore the trade-off between firmness and merchant revenue/cost (only available when grid is OFF)."
+            help="Explore the trade-off between firmness and merchant revenue/cost."
         )
-    sizing_toggle = st.sidebar.checkbox(
-        "Show gas capacity recommendation",
-        value=(run_preset == "CapacityRecommendation"),
-        help="Sweeps gas MW candidates and suggests a recommended capacity for target firmness.",
-        disabled=not (gas_enabled and gas_dispatchable),
-    )
-    firmness_target_pct = st.sidebar.slider("Firmness target (%)", 50, 100, 95, 1, disabled=not sizing_toggle)
-    sizing_max_gas_mw = st.sidebar.number_input("Max gas capacity for sweep (MW)", 0.0, 5000.0, max(0.0, gas_pmax_mw if gas_pmax_mw > 0 else 250.0), 5.0, disabled=not sizing_toggle)
-    sizing_step_mw = st.sidebar.number_input("Sweep step (MW)", 1.0, 1000.0, 25.0, 1.0, disabled=not sizing_toggle)
-    run = st.sidebar.button("🚀 Run optimisation")
+
+    # Sizing inputs only shown in sizing mode. Enabling gas+dispatchable is
+    # handled internally by the sizing engine, so we don't re-gate the UI.
+    if sizing_toggle:
+        st.sidebar.header("5 · Sizing sweep")
+        sizing_grid_on = st.sidebar.checkbox(
+            "Allow grid during sweep",
+            value=False,
+            help="If on, sweep runs use Grid-On Revenue; otherwise Grid-Off Firmness.",
+        )
+        firmness_target_pct = st.sidebar.slider("Firmness target (%)", 50, 100, 95, 1)
+        default_max_gas = max(25.0, gas_pmax_mw if gas_pmax_mw > 0 else 250.0)
+        sizing_max_gas_mw = st.sidebar.number_input("Max gas capacity for sweep (MW)", 0.0, 5000.0, default_max_gas, 5.0)
+        sizing_step_mw = st.sidebar.number_input("Sweep step (MW)", 1.0, 1000.0, 25.0, 1.0)
+    else:
+        sizing_grid_on = False
+        firmness_target_pct = 95
+        sizing_max_gas_mw = 0.0
+        sizing_step_mw = 25.0
+
+    run = st.sidebar.button("🚀 Run")
 else:
-    grid_on = False
     tradeoff_toggle = False
-    sizing_toggle = False
+    sizing_grid_on = False
     firmness_target_pct = 95
     sizing_max_gas_mw = 0.0
     sizing_step_mw = 25.0
@@ -629,7 +681,45 @@ if run and df is not None and run_cfg is not None:
         gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
     )
 
-    if grid_on:
+    if sizing_toggle:
+        st.subheader("Natural Gas Capacity Recommendation")
+        if not gas_enabled:
+            st.warning(
+                "Gas is disabled. Enable 'Natural Gas Resource' in section 3b, "
+                "or Sizing mode will just sweep capacities for a resource you never enable."
+            )
+        try:
+            start_time = time.time()
+            cap_values = np.arange(0.0, float(sizing_max_gas_mw) + float(sizing_step_mw), float(sizing_step_mw))
+            sweep_df = sizing.run_gas_capacity_sweep(
+                df,
+                run_cfg,
+                cap_values.tolist(),
+                firmness_target_pct=float(firmness_target_pct),
+                grid_allowed=bool(sizing_grid_on),
+            )
+            rec = sizing.recommend_gas_capacity(
+                sweep_df,
+                firmness_target_pct=float(firmness_target_pct),
+            )
+            elapsed = time.time() - start_time
+            st.markdown(f"**Sweep runtime:** {elapsed:.2f} s over {len(sweep_df)} capacities")
+            st.markdown(f"**Recommended gas capacity:** {rec['recommended_capacity_mw']:.1f} MW")
+            st.markdown(f"**Reason:** {rec['reason']}")
+            st.markdown(f"**Economic knee candidate:** {rec['knee_capacity_mw']:.1f} MW")
+            st.dataframe(sweep_df, use_container_width=True)
+            st.line_chart(
+                sweep_df.set_index("gas_capacity_mw")[["firmness_pct", "merchant_revenue_cost_usd"]],
+                use_container_width=True,
+            )
+            st.download_button(
+                "⬇️ Capacity sweep CSV",
+                sweep_df.to_csv(index=False).encode(),
+                f"gas_sizing_sweep_{str(d_from)}_{str(d_to)}.csv",
+            )
+        except Exception as e:
+            st.error(f"Capacity sweep failed: {e}")
+    elif grid_on:
         spill_label = "Clipped Energy"  # label for grid-on case
         st.subheader("Grid ON: Maximize Revenue with 100% Load Served")
         start_time = time.time()
@@ -659,6 +749,7 @@ if run and df is not None and run_cfg is not None:
         elapsed = time.time() - start_time
         st.markdown(f"**Optimization time:** {elapsed:.2f} seconds", unsafe_allow_html=True)
         st.dataframe(pd.Series(mets).to_frame("Value").T, use_container_width=True)
+        _gas_diagnostics_note(run_cfg, mets, df)
         st.subheader("Dispatch overview")
         fig = reporting.plot_dispatch(res, run_cfg, title="Dispatch (Grid ON)")
         st.pyplot(fig)
@@ -708,6 +799,7 @@ if run and df is not None and run_cfg is not None:
         elapsed = time.time() - start_time
         st.markdown(f"**Optimization time:** {elapsed:.2f} seconds", unsafe_allow_html=True)
         st.dataframe(pd.Series(mets).to_frame("Value").T, use_container_width=True)
+        _gas_diagnostics_note(run_cfg, mets, df)
         st.subheader("Dispatch overview")
         fig = reporting.plot_dispatch(res, run_cfg, title="")
         st.pyplot(fig)
@@ -734,29 +826,6 @@ if run and df is not None and run_cfg is not None:
             zf.writestr("metrics.csv", pd.Series(mets).to_csv(header=False))
             zf.writestr("dispatch.csv", csv)
         st.download_button("⬇️ Everything (ZIP)", buf.getvalue(), "dispatch_results.zip")
-
-        if sizing_toggle and gas_enabled and gas_dispatchable:
-            st.subheader("Natural Gas Capacity Recommendation")
-            try:
-                cap_values = np.arange(0.0, float(sizing_max_gas_mw) + float(sizing_step_mw), float(sizing_step_mw))
-                sweep_df = sizing.run_gas_capacity_sweep(
-                    df,
-                    run_cfg,
-                    cap_values.tolist(),
-                    firmness_target_pct=float(firmness_target_pct),
-                    grid_allowed=False,
-                )
-                rec = sizing.recommend_gas_capacity(
-                    sweep_df,
-                    firmness_target_pct=float(firmness_target_pct),
-                )
-                st.markdown(f"**Recommended gas capacity:** {rec['recommended_capacity_mw']:.1f} MW")
-                st.markdown(f"**Reason:** {rec['reason']}")
-                st.markdown(f"**Economic knee candidate:** {rec['knee_capacity_mw']:.1f} MW")
-                st.dataframe(sweep_df, use_container_width=True)
-                st.line_chart(sweep_df.set_index("gas_capacity_mw")[["firmness_pct", "merchant_revenue_cost_usd"]], use_container_width=True)
-            except Exception as e:
-                st.warning(f"Capacity recommendation skipped: {e}")
 
         # Trade-off analysis (only if grid is OFF and toggle is enabled)
         if not grid_on and tradeoff_toggle:

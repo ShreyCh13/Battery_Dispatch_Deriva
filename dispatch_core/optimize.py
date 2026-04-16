@@ -21,14 +21,30 @@ BIG_M = 1_000_000
 
 
 def _build_gas_cap_series(df: pd.DataFrame, cfg: RunConfig) -> pd.Series:
-    """Return gas availability cap (MW) for each interval."""
-    default_cap = float(cfg.gas_pmax_mw) if cfg.gas_pmax_mw > 0 else 0.0
-    if cfg.gas_availability_col in df.columns:
-        cap = pd.to_numeric(df[cfg.gas_availability_col], errors="coerce").fillna(0.0).clip(lower=0.0)
-        if cfg.gas_pmax_mw > 0:
-            return cap.clip(upper=float(cfg.gas_pmax_mw))
-        return cap
-    return pd.Series(default_cap, index=df.index, dtype=float)
+    """Return per-interval gas availability cap (MW).
+
+    Precedence:
+      1. If `gas_pmax_mw > 0`, it is the baseline cap for every interval.
+      2. Only when `gas_use_profile_as_cap=True` does the CSV column further
+         clip the cap per interval; otherwise the column is ignored so a
+         zero-filled column never silently disables the resource.
+      3. If `gas_pmax_mw == 0` and `gas_use_profile_as_cap=True`, the column
+         alone acts as the time-varying cap (legacy-style behavior).
+    """
+    pmax = float(cfg.gas_pmax_mw) if cfg.gas_pmax_mw > 0 else 0.0
+    has_col = cfg.gas_availability_col in df.columns
+    use_profile = bool(cfg.gas_use_profile_as_cap)
+
+    if pmax > 0 and not use_profile:
+        return pd.Series(pmax, index=df.index, dtype=float)
+
+    if has_col and use_profile:
+        col = pd.to_numeric(df[cfg.gas_availability_col], errors="coerce").fillna(0.0).clip(lower=0.0)
+        if pmax > 0:
+            return col.clip(upper=pmax)
+        return col
+
+    return pd.Series(pmax, index=df.index, dtype=float)
 
 def run_lp(
     df: pd.DataFrame,
@@ -168,7 +184,21 @@ def run_lp(
                 prob += gas_gen[t] - gas_gen[t - 1] <= float(cfg.gas_ramp_up_mw_per_h)
                 prob += gas_gen[t - 1] - gas_gen[t] <= float(cfg.gas_ramp_down_mw_per_h)
         else:
-            gas_fixed = natgas_profile.iloc[t]
+            # Non-dispatchable gas: must-run style.
+            # When gas_enabled and a static pmax is set, honor it instead of
+            # silently trusting a possibly all-zero CSV column.
+            if cfg.gas_enabled:
+                profile_val = float(natgas_profile.iloc[t])
+                pmax_static = float(cfg.gas_pmax_mw) if cfg.gas_pmax_mw > 0 else 0.0
+                col_all_zero = bool(natgas_profile.sum() <= 1e-9)
+                if pmax_static > 0 and col_all_zero:
+                    gas_fixed = pmax_static
+                elif pmax_static > 0:
+                    gas_fixed = min(profile_val, pmax_static)
+                else:
+                    gas_fixed = profile_val
+            else:
+                gas_fixed = float(natgas_profile.iloc[t])
             prob += gas_gen[t] == gas_fixed
 
         # System power balance
@@ -324,9 +354,13 @@ def run_lp(
     gas_start_count = int(np.round(res["gas_start"].to_numpy(dtype=float).sum())) if "gas_start" in res else 0
     gas_cap_ref = float(cfg.gas_pmax_mw) if cfg.gas_pmax_mw > 0 else float(gas_cap_series.max()) if len(gas_cap_series) else 0.0
     gas_cf_pct = (100.0 * total_natgas / (gas_cap_ref * T)) if gas_cap_ref > 0 and T > 0 else 0.0
+    renewable_gen_over_load_pct = (
+        ((total_wind + total_solar) / total_load * 100.0) if total_load > 0 else 0.0
+    )
     mets = {
         "firmness (%)": round(resilience_pct, 2),
         "TotalGen/TotalLoad": round(float(green_gen_over_load_pct), 2),
+        "renewable_gen_over_load_%": round(float(renewable_gen_over_load_pct), 2),
         "Merchant Revenue/Cost": round(float(revenue_tot - per_step_cost.sum()), 2),
         "total_charge_mwh": round(float(charge_arr.sum()), 2),
         "total_clip_mwh": round(float(clipped_arr.sum()), 2),

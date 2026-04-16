@@ -71,6 +71,7 @@ class RunConfig(BaseModel):
     gas_dispatchable: bool = False
     gas_cost_mode: Literal["simple", "advanced"] = "simple"
     gas_availability_col: str = "NatGas (MW)"
+    gas_use_profile_as_cap: bool = False
     gas_pmax_mw: float = 0.0
     gas_pmin_mw: float = 0.0
     gas_ramp_up_mw_per_h: float = 1_000_000.0
