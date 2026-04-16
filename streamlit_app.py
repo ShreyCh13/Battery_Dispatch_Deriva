@@ -24,38 +24,69 @@ import datetime
 from typing import cast, Literal
 import time
 
-def _gas_diagnostics_note(run_cfg, mets: dict, df_in: "pd.DataFrame | None") -> None:
-    """Surface a clear note when gas is enabled but produced no energy.
+def _gas_diagnostics_note(
+    run_cfg,
+    mets: dict,
+    df_in: "pd.DataFrame | None",
+    *,
+    mode: str | None = None,
+) -> None:
+    """Surface a clear note when gas didn't fire.
 
-    Explains the most likely root causes so the user isn't guessing why
-    nothing changed vs. the gas-off run.
+    - In `cost_min_gridoff` mode (where gas is expected to fill the gap)
+      we warn loudly if gas is unavailable, because every unserved MWh gets
+      priced at VOLL and the total cost balloons.
+    - In legacy modes we only nudge when gas is enabled but produced 0 MWh.
     """
-    if run_cfg is None or not getattr(run_cfg, "gas_enabled", False):
+    if run_cfg is None:
         return
+
     total_gas = float(mets.get("total_natgas_mwh", 0.0) or 0.0)
-    pmax = float(getattr(run_cfg, "gas_pmax_mw", 0.0) or 0.0)
     if total_gas > 1e-6:
         return
 
-    reasons = []
-    if pmax <= 0:
-        reasons.append("Gas capacity (`gas_pmax_mw`) is 0 - set it in section 3b.")
-    if not getattr(run_cfg, "gas_dispatchable", False):
-        reasons.append("Dispatchable is off and the NatGas (MW) column is empty/zero.")
-    served = float(mets.get("total_served_mwh", 0.0) or 0.0)
-    total_load = float(mets.get("total_load_mwh", 0.0) or 0.0)
-    if total_load > 0 and served >= total_load - 1e-6:
-        reasons.append("Load is already 100% served by renewables/battery, so gas was not needed.")
+    enabled = bool(getattr(run_cfg, "gas_enabled", False))
+    pmax = float(getattr(run_cfg, "gas_pmax_mw", 0.0) or 0.0)
+    dispatchable = bool(getattr(run_cfg, "gas_dispatchable", False))
+    use_prof = bool(getattr(run_cfg, "gas_use_profile_as_cap", False))
+
+    col_sum = 0.0
     if df_in is not None and "NatGas (MW)" in df_in.columns:
         col_sum = float(pd.to_numeric(df_in["NatGas (MW)"], errors="coerce").fillna(0.0).sum())
-        if col_sum <= 1e-9 and getattr(run_cfg, "gas_use_profile_as_cap", False):
-            reasons.append("`gas_use_profile_as_cap` is on and the NatGas (MW) column is all zeros - capacity is being clipped to 0.")
-    if not reasons:
-        reasons.append("Variable gas cost is high enough that running gas is not economic.")
-    st.info(
-        "Gas was enabled but produced 0 MWh. Likely reasons:\n- "
-        + "\n- ".join(reasons)
-    )
+
+    served = float(mets.get("total_served_mwh", 0.0) or 0.0)
+    total_load = float(mets.get("total_load_mwh", 0.0) or 0.0)
+    unserved = max(total_load - served, 0.0)
+
+    reasons: list[str] = []
+    if not enabled:
+        reasons.append("Gas is **disabled** (sidebar → '3b · Natural Gas Resource' → 'Enable Natural Gas Resource').")
+    else:
+        if pmax <= 0:
+            reasons.append("Gas capacity (`Gas capacity (MW)`) is **0** - set it in section 3b.")
+        if not dispatchable:
+            reasons.append("'Dispatchable gas (unit commitment)' is **off**, so gas is fixed to the NatGas (MW) column in the CSV (template is all zeros).")
+        if use_prof and col_sum <= 1e-9:
+            reasons.append("`Use NatGas (MW) column as cap` is on but the column is all zeros - capacity is being clipped to 0.")
+        if total_load > 0 and served >= total_load - 1e-6:
+            reasons.append("Load is already 100% served by renewables/battery, so gas was not needed.")
+        if not reasons:
+            reasons.append("Variable gas cost is high enough that running gas is not economic.")
+
+    is_cost_min = mode == "cost_min_gridoff"
+    if is_cost_min and unserved > 1e-6 and (not enabled or pmax <= 0 or (enabled and not dispatchable and col_sum <= 1e-9)):
+        voll = float(getattr(run_cfg, "voll_usd_per_mwh", 0.0) or 0.0)
+        st.warning(
+            f"**No firming gas available** - {unserved:,.0f} MWh of load went unserved and was priced at "
+            f"VOLL = ${voll:,.0f}/MWh, which is why the total operating cost is so large.\n\n"
+            "Fix one of these in the sidebar (**3b · Natural Gas Resource**):\n- "
+            + "\n- ".join(reasons)
+        )
+    else:
+        st.info(
+            "Gas produced 0 MWh this run. Likely reasons:\n- "
+            + "\n- ".join(reasons)
+        )
 
 
 def get_date_safe(val):
