@@ -29,7 +29,10 @@ def simulate_fixed_schedule(df: pd.DataFrame, cfg: RunConfig, schedule_df: pd.Da
     POI = getattr(cfg, 'poi_limit_mw', 1e6)  # Use a very high value if not set
     
     # --- Prepare input series ---
-    gen = df["Wind (MW)"].fillna(0) + df["Solar (MW)"].fillna(0) + df["NatGas (MW)"].fillna(0)
+    wind = df["Wind (MW)"].fillna(0)
+    solar = df["Solar (MW)"].fillna(0)
+    natgas = df["NatGas (MW)"].fillna(0) if "NatGas (MW)" in df.columns else 0.0
+    gen = wind + solar + natgas
     load = df["Load (MW)"]
     price = df[price_col]
     
@@ -108,6 +111,11 @@ def simulate_fixed_schedule(df: pd.DataFrame, cfg: RunConfig, schedule_df: pd.Da
     res["grid_imp"] = grid_imp
     res["grid_exp"] = grid_exp
     res["clipped"] = clipped
+    res["gas_gen"] = natgas if isinstance(natgas, pd.Series) else np.zeros(T)
+    res["gas_on"] = (res["gas_gen"] > 1e-6).astype(float)
+    res["gas_start"] = 0.0
+    res["gas_stop"] = 0.0
+    res["gas_cost_$"] = 0.0
     res["soc1"] = soc
     res["soc2"] = 0.0
     res["soc"] = soc
@@ -145,7 +153,10 @@ def simulate_fixed_schedule(df: pd.DataFrame, cfg: RunConfig, schedule_df: pd.Da
         "total_served_mwh": round(served, 2),
         "grid_imp_mwh": round(grid_imp_sum, 2),
         "grid_exp_mwh": round(grid_exp_sum, 2),
+        "Merchant Revenue/Cost": round(float(revenue_tot), 2),
+        "natgas_total_cost_$": 0.0,
+        "total_natgas_mwh": round(float(res["gas_gen"].sum(skipna=True)), 2),
         "mode": "fixed_schedule",
-        "note": "This run used a fixed charge/discharge schedule. Battery RTE and all constraints were enforced. No optimization was performed."
+        "note": "This run used a fixed charge/discharge schedule. Battery RTE and all constraints were enforced. No optimization was performed. Natural gas follows the input profile and is not dispatch-optimized in this mode."
     }
     return res, mets 

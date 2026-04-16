@@ -9,6 +9,7 @@ from pathlib import Path
 import io, zipfile
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 # from dispatch_core.optimize import tradeoff_analysis  # No longer needed as direct import
 
@@ -17,6 +18,7 @@ import dispatch_core.config    as cfg
 import dispatch_core.data_io   as data_io
 import dispatch_core.optimize  as optimize
 import dispatch_core.reporting as reporting
+import dispatch_core.sizing    as sizing
 
 import datetime
 from typing import cast, Literal
@@ -73,6 +75,7 @@ with st.sidebar.expander("? Data format help"):
     - `Market Price ($/MWh)`
     **Optional columns:**
     - `Wind (MW)`, `Solar (MW)`, `NatGas (MW)` (filled with zeros if missing)
+    - If dispatchable gas is enabled, `NatGas (MW)` is treated as time-varying gas availability cap.
     **File types:** CSV, Excel (.xlsx)
     **How missing data is handled:**
     - Missing required columns: error, must fix
@@ -296,6 +299,38 @@ batt2_power = st.sidebar.number_input("Battery 2 Power MW", 0.0, 2000.0, 0.0, 10
 batt2_dur   = st.sidebar.number_input("Battery 2 Duration h", 0.0, 1000.0, 0.0, 0.5)
 batt2_rte   = st.sidebar.number_input("Battery 2 RTE", 0.5, 1.0, 0.86, 0.01)
 
+# ── Sidebar: natural gas resource (collapsed by default) ────
+with st.sidebar.expander("3b · Natural Gas Resource (optional)", expanded=False):
+    gas_enabled = st.toggle("Enable Natural Gas Resource", value=False)
+    gas_dispatchable = st.toggle("Dispatchable gas (unit commitment)", value=False, disabled=not gas_enabled)
+    gas_cost_mode_label = st.selectbox(
+        "Gas cost mode",
+        ["Simple ($/MWh)", "Advanced (heat-rate + fuel)"],
+        index=0,
+        disabled=not gas_enabled,
+    )
+    gas_cost_mode = "advanced" if gas_cost_mode_label.startswith("Advanced") else "simple"
+    gas_pmax_mw = st.number_input("Gas capacity (MW)", 0.0, 5000.0, 0.0, 5.0, disabled=not gas_enabled)
+    gas_var_cost_usd_per_mwh = st.number_input("Gas variable cost ($/MWh)", 0.0, 1000.0, 65.0, 1.0, disabled=(not gas_enabled or gas_cost_mode != "simple"))
+    gas_heat_rate_mmbtu_per_mwh = st.number_input("Heat rate (MMBtu/MWh)", 0.0, 20.0, 7.5, 0.1, disabled=(not gas_enabled or gas_cost_mode != "advanced"))
+    gas_fuel_price_usd_per_mmbtu = st.number_input("Fuel price ($/MMBtu)", 0.0, 100.0, 3.5, 0.1, disabled=(not gas_enabled or gas_cost_mode != "advanced"))
+    gas_vom_usd_per_mwh = st.number_input("VOM ($/MWh)", 0.0, 200.0, 0.0, 0.1, disabled=(not gas_enabled or gas_cost_mode != "advanced"))
+    show_advanced_gas = st.toggle("Show advanced gas constraints", value=False, disabled=(not gas_enabled or not gas_dispatchable))
+    if show_advanced_gas:
+        gas_pmin_mw = st.number_input("Gas min stable output (MW)", 0.0, 5000.0, 0.0, 5.0)
+        gas_ramp_up_mw_per_h = st.number_input("Ramp-up limit (MW/h)", 0.0, 10000.0, 500.0, 5.0)
+        gas_ramp_down_mw_per_h = st.number_input("Ramp-down limit (MW/h)", 0.0, 10000.0, 500.0, 5.0)
+        gas_min_up_h = st.number_input("Minimum up-time (h)", 0, 168, 0, 1)
+        gas_min_down_h = st.number_input("Minimum down-time (h)", 0, 168, 0, 1)
+        gas_startup_cost_usd = st.number_input("Startup cost ($/start)", 0.0, 500000.0, 0.0, 100.0)
+    else:
+        gas_pmin_mw = 0.0
+        gas_ramp_up_mw_per_h = 1_000_000.0
+        gas_ramp_down_mw_per_h = 1_000_000.0
+        gas_min_up_h = 0
+        gas_min_down_h = 0
+        gas_startup_cost_usd = 0.0
+
 # ── Sidebar: Mode selection ─────────────────────────────────────────
 mode = st.sidebar.radio(
     "Mode",
@@ -314,6 +349,12 @@ if mode == "Optimized Dispatch":
     )
     # ── Sidebar: optimisation objective ──────────────────────────
     st.sidebar.header("5 · Optimisation")
+    run_preset = st.sidebar.selectbox(
+        "Preset",
+        ["FastSimple", "DispatchDetailed", "ReliabilityTarget", "CapacityRecommendation"],
+        index=0,
+        help="Keeps default flow simple while exposing advanced options when needed.",
+    )
     if grid_on:
         st.sidebar.info("**Objective:** Maximize net revenue (all load is served)")
     else:
@@ -325,10 +366,23 @@ if mode == "Optimized Dispatch":
             value=False,
             help="Explore the trade-off between firmness and merchant revenue/cost (only available when grid is OFF)."
         )
+    sizing_toggle = st.sidebar.checkbox(
+        "Show gas capacity recommendation",
+        value=(run_preset == "CapacityRecommendation"),
+        help="Sweeps gas MW candidates and suggests a recommended capacity for target firmness.",
+        disabled=not (gas_enabled and gas_dispatchable),
+    )
+    firmness_target_pct = st.sidebar.slider("Firmness target (%)", 50, 100, 95, 1, disabled=not sizing_toggle)
+    sizing_max_gas_mw = st.sidebar.number_input("Max gas capacity for sweep (MW)", 0.0, 5000.0, max(0.0, gas_pmax_mw if gas_pmax_mw > 0 else 250.0), 5.0, disabled=not sizing_toggle)
+    sizing_step_mw = st.sidebar.number_input("Sweep step (MW)", 1.0, 1000.0, 25.0, 1.0, disabled=not sizing_toggle)
     run = st.sidebar.button("🚀 Run optimisation")
 else:
     grid_on = False
     tradeoff_toggle = False
+    sizing_toggle = False
+    firmness_target_pct = 95
+    sizing_max_gas_mw = 0.0
+    sizing_step_mw = 25.0
     run = False
 
 # If using synthetic data, keep date window selection
@@ -376,6 +430,20 @@ if mode == "Optimized Dispatch":
         battery2_rte          = batt2_rte,
         poi_limit_mw       = poi_limit_val,
         market_price_col   = "Market Price ($/MWh)",
+        gas_enabled = gas_enabled,
+        gas_dispatchable = gas_dispatchable,
+        gas_cost_mode = cast(Literal["simple", "advanced"], gas_cost_mode),
+        gas_pmax_mw = gas_pmax_mw,
+        gas_pmin_mw = gas_pmin_mw,
+        gas_ramp_up_mw_per_h = gas_ramp_up_mw_per_h,
+        gas_ramp_down_mw_per_h = gas_ramp_down_mw_per_h,
+        gas_min_up_h = int(gas_min_up_h),
+        gas_min_down_h = int(gas_min_down_h),
+        gas_startup_cost_usd = gas_startup_cost_usd,
+        gas_var_cost_usd_per_mwh = gas_var_cost_usd_per_mwh,
+        gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
+        gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
+        gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
     )
 else:
     # Fixed Schedule mode: always use a valid float for poi_limit_mw
@@ -396,6 +464,20 @@ else:
         battery2_rte=batt2_rte,
         poi_limit_mw=250.0,  # Always a float
         market_price_col="Market Price ($/MWh)",
+        gas_enabled = gas_enabled,
+        gas_dispatchable = gas_dispatchable,
+        gas_cost_mode = cast(Literal["simple", "advanced"], gas_cost_mode),
+        gas_pmax_mw = gas_pmax_mw,
+        gas_pmin_mw = gas_pmin_mw,
+        gas_ramp_up_mw_per_h = gas_ramp_up_mw_per_h,
+        gas_ramp_down_mw_per_h = gas_ramp_down_mw_per_h,
+        gas_min_up_h = int(gas_min_up_h),
+        gas_min_down_h = int(gas_min_down_h),
+        gas_startup_cost_usd = gas_startup_cost_usd,
+        gas_var_cost_usd_per_mwh = gas_var_cost_usd_per_mwh,
+        gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
+        gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
+        gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
     )
 
 # Always build config and load data before main workflow
@@ -435,6 +517,20 @@ try:
                 battery2_rte          = batt2_rte,
                 poi_limit_mw       = (poi_limit if poi_limit is not None else 250.0),
                 market_price_col   = "Market Price ($/MWh)",
+                gas_enabled = gas_enabled,
+                gas_dispatchable = gas_dispatchable,
+                gas_cost_mode = cast(Literal["simple", "advanced"], gas_cost_mode),
+                gas_pmax_mw = gas_pmax_mw,
+                gas_pmin_mw = gas_pmin_mw,
+                gas_ramp_up_mw_per_h = gas_ramp_up_mw_per_h,
+                gas_ramp_down_mw_per_h = gas_ramp_down_mw_per_h,
+                gas_min_up_h = int(gas_min_up_h),
+                gas_min_down_h = int(gas_min_down_h),
+                gas_startup_cost_usd = gas_startup_cost_usd,
+                gas_var_cost_usd_per_mwh = gas_var_cost_usd_per_mwh,
+                gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
+                gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
+                gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
             )
             from dispatch_core.profiles import generate
             valid_types = ["24-7", "16-7", "random", "random_16-7"]
@@ -461,6 +557,20 @@ try:
                 battery2_rte          = batt2_rte,
                 poi_limit_mw       = (poi_limit if poi_limit is not None else 250.0),
                 market_price_col   = "Market Price ($/MWh)",
+                gas_enabled = gas_enabled,
+                gas_dispatchable = gas_dispatchable,
+                gas_cost_mode = cast(Literal["simple", "advanced"], gas_cost_mode),
+                gas_pmax_mw = gas_pmax_mw,
+                gas_pmin_mw = gas_pmin_mw,
+                gas_ramp_up_mw_per_h = gas_ramp_up_mw_per_h,
+                gas_ramp_down_mw_per_h = gas_ramp_down_mw_per_h,
+                gas_min_up_h = int(gas_min_up_h),
+                gas_min_down_h = int(gas_min_down_h),
+                gas_startup_cost_usd = gas_startup_cost_usd,
+                gas_var_cost_usd_per_mwh = gas_var_cost_usd_per_mwh,
+                gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
+                gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
+                gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
             )
         # === FIX: Use user_df directly for both uploaded files and template ===
         if user_data_source in ["uploaded", "template"]:
@@ -503,6 +613,20 @@ if run and df is not None and run_cfg is not None:
         battery2_rte          = batt2_rte,
         poi_limit_mw       = poi_limit_val,
         market_price_col   = "Market Price ($/MWh)",
+        gas_enabled = gas_enabled,
+        gas_dispatchable = gas_dispatchable,
+        gas_cost_mode = cast(Literal["simple", "advanced"], gas_cost_mode),
+        gas_pmax_mw = gas_pmax_mw,
+        gas_pmin_mw = gas_pmin_mw,
+        gas_ramp_up_mw_per_h = gas_ramp_up_mw_per_h,
+        gas_ramp_down_mw_per_h = gas_ramp_down_mw_per_h,
+        gas_min_up_h = int(gas_min_up_h),
+        gas_min_down_h = int(gas_min_down_h),
+        gas_startup_cost_usd = gas_startup_cost_usd,
+        gas_var_cost_usd_per_mwh = gas_var_cost_usd_per_mwh,
+        gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
+        gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
+        gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
     )
 
     if grid_on:
@@ -611,6 +735,29 @@ if run and df is not None and run_cfg is not None:
             zf.writestr("dispatch.csv", csv)
         st.download_button("⬇️ Everything (ZIP)", buf.getvalue(), "dispatch_results.zip")
 
+        if sizing_toggle and gas_enabled and gas_dispatchable:
+            st.subheader("Natural Gas Capacity Recommendation")
+            try:
+                cap_values = np.arange(0.0, float(sizing_max_gas_mw) + float(sizing_step_mw), float(sizing_step_mw))
+                sweep_df = sizing.run_gas_capacity_sweep(
+                    df,
+                    run_cfg,
+                    cap_values.tolist(),
+                    firmness_target_pct=float(firmness_target_pct),
+                    grid_allowed=False,
+                )
+                rec = sizing.recommend_gas_capacity(
+                    sweep_df,
+                    firmness_target_pct=float(firmness_target_pct),
+                )
+                st.markdown(f"**Recommended gas capacity:** {rec['recommended_capacity_mw']:.1f} MW")
+                st.markdown(f"**Reason:** {rec['reason']}")
+                st.markdown(f"**Economic knee candidate:** {rec['knee_capacity_mw']:.1f} MW")
+                st.dataframe(sweep_df, use_container_width=True)
+                st.line_chart(sweep_df.set_index("gas_capacity_mw")[["firmness_pct", "merchant_revenue_cost_usd"]], use_container_width=True)
+            except Exception as e:
+                st.warning(f"Capacity recommendation skipped: {e}")
+
         # Trade-off analysis (only if grid is OFF and toggle is enabled)
         if not grid_on and tradeoff_toggle:
             st.subheader("Firmness vs Merchant Revenue/Cost Trade-off Analysis")
@@ -631,7 +778,7 @@ if run and df is not None and run_cfg is not None:
             st.pyplot(fig)
             st.markdown("**Knee of the curve:** Where a small loss in firmness gives a big gain in revenue.")
             st.write(f"Knee at slack = {results_df['slack_%'][knee_idx]}%: Firmness = {results_df['firmness (%)'][knee_idx]:.2f}%, Revenue = ${results_df['Merchant Revenue/Cost'][knee_idx]:,.2f}")
-            st.markdown("""
+            st.markdown(r"""
             **How is revenue calculated?**  
             For each slack value, the optimizer maximizes the sum over all timesteps of:
             $\text{Revenue} = \sum_t \text{Market Price}_t \times (\text{Generation}_t + \text{Discharge}_t - \text{Charge}_t)$

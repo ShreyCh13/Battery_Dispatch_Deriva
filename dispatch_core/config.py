@@ -66,6 +66,23 @@ class RunConfig(BaseModel):
     capex_energy_usd_per_kwh: float = 150
     discount_years:           int   = 20
 
+    # ── Natural gas resource (optional, backward compatible) ─
+    gas_enabled: bool = False
+    gas_dispatchable: bool = False
+    gas_cost_mode: Literal["simple", "advanced"] = "simple"
+    gas_availability_col: str = "NatGas (MW)"
+    gas_pmax_mw: float = 0.0
+    gas_pmin_mw: float = 0.0
+    gas_ramp_up_mw_per_h: float = 1_000_000.0
+    gas_ramp_down_mw_per_h: float = 1_000_000.0
+    gas_min_up_h: int = 0
+    gas_min_down_h: int = 0
+    gas_startup_cost_usd: float = 0.0
+    gas_var_cost_usd_per_mwh: float = 0.0
+    gas_heat_rate_mmbtu_per_mwh: float = 7.5
+    gas_fuel_price_usd_per_mmbtu: float = 3.5
+    gas_vom_usd_per_mwh: float = 0.0
+
     # Helper properties for battery energy (MWh)
     @property
     def battery_energy_mwh(self) -> float:
@@ -76,3 +93,15 @@ class RunConfig(BaseModel):
     def battery2_energy_mwh(self) -> float:
         """Total energy capacity of battery 2 (MWh)."""
         return self.battery2_power_mw * self.battery2_duration_h
+
+    @property
+    def gas_variable_cost_usd_per_mwh(self) -> float:
+        """Variable gas operating cost in $/MWh using configured mode."""
+        if not self.gas_enabled:
+            return 0.0
+        if self.gas_cost_mode == "advanced":
+            return (
+                self.gas_heat_rate_mmbtu_per_mwh * self.gas_fuel_price_usd_per_mmbtu
+                + self.gas_vom_usd_per_mwh
+            )
+        return self.gas_var_cost_usd_per_mwh

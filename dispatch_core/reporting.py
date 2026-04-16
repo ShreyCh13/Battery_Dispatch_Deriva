@@ -29,7 +29,7 @@ def plot_dispatch(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispatch", sh
     # Extract individual sources
     solar = res["Solar (MW)"] if "Solar (MW)" in res else pd.Series(0, index=t)
     wind = res["Wind (MW)"] if "Wind (MW)" in res else pd.Series(0, index=t)
-    natgas = res["NatGas (MW)"] if "NatGas (MW)" in res else pd.Series(0, index=t)
+    natgas = res["gas_gen"] if "gas_gen" in res else (res["NatGas (MW)"] if "NatGas (MW)" in res else pd.Series(0, index=t))
     battery1 = res["discharge1"] - res["charge1"] if "discharge1" in res and "charge1" in res else pd.Series(0, index=t)
     battery2 = res["discharge2"] - res["charge2"] if "discharge2" in res and "charge2" in res else pd.Series(0, index=t)
     grid = res["grid_exp"] - res["grid_imp"] if "grid_exp" in res and "grid_imp" in res else pd.Series(0, index=t)
@@ -138,9 +138,11 @@ def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title: str = "Revenue Over T
     """
     t = res.index
     if "price" in res:
-        revenue = ((res["grid_exp"] - res["grid_imp"]) * res["price"])  # $ (for hourly data: MW * $/MWh * 1h = $)
+        merchant = ((res["grid_exp"] - res["grid_imp"]) * res["price"])  # $ (for hourly data: MW * $/MWh * 1h = $)
+        gas_cost = res["gas_cost_$"] if "gas_cost_$" in res else 0.0
+        revenue = merchant - gas_cost
         fig, ax = plt.subplots(figsize=(14,5))
-        ax.plot(t, revenue.cumsum(), label="Cumulative Revenue ($)", color="purple")
+        ax.plot(t, revenue.cumsum(), label="Cumulative Net Revenue ($)", color="purple")
         ax.set_xlabel("Time"); ax.set_ylabel("Cumulative Revenue ($)")
         ax.set_title(title)
         # Overlay market price on secondary y-axis
@@ -156,6 +158,10 @@ def plot_revenue(res: pd.DataFrame, cfg: RunConfig, title: str = "Revenue Over T
         lines, labels = ax.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax2.legend(lines + lines2, labels + labels2, loc="upper left")
+        if "gas_cost_$" in res:
+            ax.plot(t, merchant.cumsum(), label="Cumulative Merchant ($)", color="magenta", alpha=0.5)
+            ax.plot(t, pd.Series(gas_cost, index=t).cumsum(), label="Cumulative Gas Cost ($)", color="red", alpha=0.5)
+            ax.legend(loc="upper right")
         fig.tight_layout()
         return fig
     else:
@@ -199,6 +205,12 @@ def plot_dispatch_plotly(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispat
         fig.add_trace(go.Scatter(x=t, y=res["Wind (MW)"], mode='lines', name='Wind', line=dict(color='orange'), visible='legendonly'))
     if "NatGas (MW)" in res:
         fig.add_trace(go.Scatter(x=t, y=res["NatGas (MW)"], mode='lines', name='NatGas', line=dict(color='grey'), visible='legendonly'))
+    if "gas_gen" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["gas_gen"], mode='lines', name='Gas Dispatch', line=dict(color='grey', dash='dash'), visible='legendonly'))
+    if "gas_on" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["gas_on"], mode='lines', name='Gas On/Off', line=dict(color='black', dash='dot'), visible='legendonly'))
+    if "gas_cost_$" in res:
+        fig.add_trace(go.Scatter(x=t, y=res["gas_cost_$"].cumsum(), mode='lines', name='Cumulative Gas Cost ($)', line=dict(color='red', dash='dot'), visible='legendonly'))
     if "discharge1" in res and "charge1" in res:
         fig.add_trace(go.Scatter(x=t, y=res["discharge1"] - res["charge1"], mode='lines', name='Battery 1', line=dict(color='lightblue'), opacity=0.5, visible='legendonly'))
     if "discharge2" in res and "charge2" in res:
@@ -214,7 +226,7 @@ def plot_dispatch_plotly(res: pd.DataFrame, cfg: RunConfig, title: str = "Dispat
     
     # Add any other time series columns (hidden by default, avoid duplications)
     for col in res.columns:
-        if col not in ["Solar (MW)", "Wind (MW)", "NatGas (MW)", "discharge1", "charge1", "discharge2", "charge2", "grid_exp", "grid_imp", "load", "Load (MW)", "price", "price_$/kWh", "Market Price ($/MWh)", "revenue_t", "clipped", "net_to_grid"]:
+        if col not in ["Solar (MW)", "Wind (MW)", "NatGas (MW)", "gas_gen", "gas_on", "gas_start", "gas_stop", "gas_cost_$", "discharge1", "charge1", "discharge2", "charge2", "grid_exp", "grid_imp", "load", "Load (MW)", "price", "price_$/kWh", "Market Price ($/MWh)", "revenue_t", "clipped", "net_to_grid"]:
             # Use dtype.type to avoid ExtensionDtype issues
             if np.issubdtype(res[col].dtype.type, np.number):
                 fig.add_trace(go.Scatter(x=t, y=res[col], mode='lines', name=col, visible='legendonly'))

@@ -10,6 +10,7 @@ import sys
 import pandas as pd
 from .config import RunConfig
 
+
 def load_data(cfg: RunConfig) -> pd.DataFrame:
     """
     Loads time series data from a CSV or Excel file, validates required columns, and fills missing optional columns.
@@ -44,15 +45,27 @@ def load_data(cfg: RunConfig) -> pd.DataFrame:
     # Filter by date window
     df = df.loc[cfg.start_date : cfg.end_date]
 
-    # Ensure optional columns exist; fill with zeros if missing
-    for col in ["Wind (MW)", "Solar (MW)", "NatGas (MW)"]:
+    # Ensure optional generation columns exist; fill with zeros if missing
+    optional_cols = ["Wind (MW)", "Solar (MW)", "NatGas (MW)"]
+    for col in optional_cols:
         if col not in df.columns:
             df[col] = 0.0  # Fill missing optional columns with zeros
+    # Optional dispatchable gas availability cap
+    if cfg.gas_availability_col and cfg.gas_availability_col not in df.columns:
+        df[cfg.gas_availability_col] = df["NatGas (MW)"].copy()
 
     # Check for required columns
     needed = ["Wind (MW)", "Solar (MW)", cfg.market_price_col]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         sys.exit(f"[data_io] Missing required columns: {missing}. Please ensure your data file includes these columns.")
+
+    # Numeric cleanup for dispatch-sensitive columns
+    numeric_cols = list(set(optional_cols + [cfg.market_price_col, cfg.gas_availability_col]))
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+            if col != cfg.market_price_col:
+                df[col] = df[col].clip(lower=0.0)
 
     return df
