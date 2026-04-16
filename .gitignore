@@ -1,0 +1,29 @@
+# Python bytecode — NEVER commit these. Stale .pyc files with matching
+# mtimes from a fresh clone will be loaded in place of the .py source on
+# Streamlit Cloud and run old code. Keeping this file clean is critical.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Pytest / mypy / coverage
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build artefacts
+build/
+dist/
+*.egg-info/
