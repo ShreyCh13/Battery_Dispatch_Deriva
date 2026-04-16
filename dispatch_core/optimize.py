@@ -50,10 +50,11 @@ def run_lp(
     df: pd.DataFrame,
     cfg: RunConfig,
     *,
-    mode: str = "blend",        # blend | revenue | resilience | serve | grid_on_max_revenue
+    mode: str = "blend",        # blend | revenue | resilience | serve | grid_on_max_revenue | cost_min_gridoff
     blend_lambda: float = 0.9,
     grid_allowed: bool = True,
     min_served_mwh: float | None = None,
+    relax_uc: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Linear program for battery dispatch optimization.
@@ -61,9 +62,13 @@ def run_lp(
     Modes:
       - 'blend': maximize weighted sum of resilience and grid revenue
       - 'revenue': maximize grid revenue
-      - 'resilience': maximize load served
+      - 'resilience': maximize load served (legacy lexicographic objective)
       - 'serve': (not used)
       - 'grid_on_max_revenue': (grid ON only) serve 100% of load, maximize net revenue (grid export * price - grid import * price)
+      - 'cost_min_gridoff': minimize total economic cost (VOLL * unserved + gas variable + gas no-load + gas startup + battery degradation [+ carbon])
+        Reliability is internally priced via VOLL rather than enforced as a hard constraint, which removes the
+        "free idle gas" and "phantom clipped revenue" artifacts of the legacy resilience mode and is the scoring
+        function used by the configuration screener.
 
     Args:
         df (pd.DataFrame): Input time series data (must include generation, load, price columns).
@@ -71,6 +76,8 @@ def run_lp(
         mode (str): Optimization mode (see above).
         blend_lambda (float): Weight for blend mode (0–1).
         grid_allowed (bool): If False, disables grid import/export.
+        relax_uc (bool): If True, gas commitment binaries are relaxed to [0,1] continuous (LP rather than MILP).
+            Used by the screener for tractability; the recommended config is then re-validated with full MILP.
 
     Returns:
         Tuple[pd.DataFrame, dict]:
@@ -83,6 +90,11 @@ def run_lp(
     """
     if mode == "blend":
         assert 0 <= blend_lambda <= 1, "blend_lambda must be between 0 and 1."
+
+    # Time step (hours per interval). Default 1.0 preserves legacy hourly behaviour.
+    dt = float(getattr(cfg, "dt_hours", 1.0) or 1.0)
+    if dt <= 0:
+        raise ValueError(f"cfg.dt_hours must be positive, got {dt}")
 
     # Prepare input series
     wind = pd.to_numeric(df.get("Wind (MW)", 0.0), errors="coerce").fillna(0.0)
@@ -108,38 +120,63 @@ def run_lp(
 
     gas_dispatchable = bool(cfg.gas_enabled and cfg.gas_dispatchable)
     gas_var_cost = float(cfg.gas_variable_cost_usd_per_mwh)
+    gas_no_load_cost = float(getattr(cfg, "effective_no_load_cost_usd_per_h", 0.0) or 0.0)
+    bess_deg_cost = float(getattr(cfg, "bess_deg_cost_usd_per_mwh", 0.0) or 0.0)
+    voll = float(getattr(cfg, "voll_usd_per_mwh", 5000.0) or 0.0)
+    carbon_price = float(getattr(cfg, "carbon_price_usd_per_ton", 0.0) or 0.0)
+    co2_per_mwh = float(getattr(cfg, "gas_co2_tons_per_mwh", 0.0) or 0.0)
     gas_cap_series = _build_gas_cap_series(df, cfg)
 
+    # cost_min_gridoff is conceptually grid-off; let callers still pass grid_allowed=True
+    # if they want to extend to grid-on screening (merchant revenue is added below).
+    if mode == "cost_min_gridoff" and not grid_allowed:
+        POI = 0
+    POI_local = POI
+
     # ── LP/MILP model setup ───────────────────────────────────────
-    prob = pulp.LpProblem("BatteryDispatch", pulp.LpMaximize)
+    # cost_min_gridoff is a minimization; everything else stays maximization.
+    if mode == "cost_min_gridoff":
+        prob = pulp.LpProblem("BatteryDispatch", pulp.LpMinimize)
+    else:
+        prob = pulp.LpProblem("BatteryDispatch", pulp.LpMaximize)
     # Battery 1 variables
-    c1  = pulp.LpVariable.dicts("c1",  range(T), 0, Pmax1)  # Charge
-    d1  = pulp.LpVariable.dicts("d1",  range(T), 0, Pmax1)  # Discharge
-    s1  = pulp.LpVariable.dicts("s1",  range(T), 0, Emax1)  # State of charge
+    c1  = pulp.LpVariable.dicts("c1",  range(T), 0, Pmax1)  # Charge (MW)
+    d1  = pulp.LpVariable.dicts("d1",  range(T), 0, Pmax1)  # Discharge (MW)
+    s1  = pulp.LpVariable.dicts("s1",  range(T), 0, Emax1)  # State of charge (MWh)
     # Battery 2 variables
     c2  = pulp.LpVariable.dicts("c2",  range(T), 0, Pmax2)
     d2  = pulp.LpVariable.dicts("d2",  range(T), 0, Pmax2)
     s2  = pulp.LpVariable.dicts("s2",  range(T), 0, Emax2)
-    # System variables
-    v  = pulp.LpVariable.dicts("v",  range(T), 0)           # Load served
-    gi = pulp.LpVariable.dicts("gi", range(T), 0, POI)      # Grid import
-    ge = pulp.LpVariable.dicts("ge", range(T), 0, POI)      # Grid export
-    cl = pulp.LpVariable.dicts("cl", range(T), 0)           # Clipped energy
-    gas_gen = pulp.LpVariable.dicts("gas_gen", range(T), 0)
+    # System variables (all power vars are MW; energy = power*dt)
+    v  = pulp.LpVariable.dicts("v",  range(T), 0)             # Load served (MW)
+    gi = pulp.LpVariable.dicts("gi", range(T), 0, POI_local)  # Grid import (MW)
+    ge = pulp.LpVariable.dicts("ge", range(T), 0, POI_local)  # Grid export (MW)
+    cl = pulp.LpVariable.dicts("cl", range(T), 0)             # Clipped energy (MW)
+    gas_gen = pulp.LpVariable.dicts("gas_gen", range(T), 0)   # Gas generation (MW)
+    # Unserved energy auxiliary (only meaningful for cost_min_gridoff but defined always for consistency)
+    unserved = pulp.LpVariable.dicts("unserved", range(T), 0)
     gas_on = {}
     gas_start = {}
     gas_stop = {}
     if gas_dispatchable:
-        gas_on = pulp.LpVariable.dicts("gas_on", range(T), 0, 1, cat="Binary")
-        gas_start = pulp.LpVariable.dicts("gas_start", range(T), 0, 1, cat="Binary")
-        gas_stop = pulp.LpVariable.dicts("gas_stop", range(T), 0, 1, cat="Binary")
+        bin_cat = "Continuous" if relax_uc else "Binary"
+        gas_on = pulp.LpVariable.dicts("gas_on", range(T), 0, 1, cat=bin_cat)
+        gas_start = pulp.LpVariable.dicts("gas_start", range(T), 0, 1, cat=bin_cat)
+        gas_stop = pulp.LpVariable.dicts("gas_stop", range(T), 0, 1, cat=bin_cat)
 
-    # Objective function components
-    grid_revenue = pulp.lpSum(price.iloc[t] * (ge[t] - gi[t]) for t in range(T))
-    resilience    = pulp.lpSum(val*v[t] for t in range(T))
-    clipped_revenue = pulp.lpSum(price.iloc[t] * cl[t] for t in range(T))  # potential merchant revenue from clipped energy
-    gas_energy_cost = pulp.lpSum(gas_var_cost * gas_gen[t] for t in range(T))
+    # Objective function components (energy = power * dt; per-event costs unchanged by dt)
+    grid_revenue = pulp.lpSum(price.iloc[t] * (ge[t] - gi[t]) * dt for t in range(T))
+    resilience    = pulp.lpSum(val * v[t] * dt for t in range(T))
+    clipped_revenue = pulp.lpSum(price.iloc[t] * cl[t] * dt for t in range(T))  # legacy "phantom" merchant from clipped energy
+    gas_energy_cost = pulp.lpSum(gas_var_cost * gas_gen[t] * dt for t in range(T))
     gas_start_cost = pulp.lpSum(float(cfg.gas_startup_cost_usd) * gas_start[t] for t in range(T)) if gas_dispatchable else 0.0
+    gas_no_load_cost_term = (
+        pulp.lpSum(gas_no_load_cost * gas_on[t] * dt for t in range(T)) if gas_dispatchable and gas_no_load_cost > 0 else 0.0
+    )
+    bess_deg_cost_term = pulp.lpSum(bess_deg_cost * (d1[t] + d2[t]) * dt for t in range(T)) if bess_deg_cost > 0 else 0.0
+    co2_cost_term = pulp.lpSum(carbon_price * co2_per_mwh * gas_gen[t] * dt for t in range(T)) if (carbon_price > 0 and co2_per_mwh > 0) else 0.0
+    unserved_cost_term = pulp.lpSum(voll * unserved[t] * dt for t in range(T))
+
     total_gas_cost = gas_energy_cost + gas_start_cost
     LEX_WEIGHT = 1_000_000  # large weight to enforce lexicographic priority
 
@@ -147,7 +184,7 @@ def run_lp(
     artificial_resilience_revenue = pulp.LpAffineExpression()
     if mode == "resilience_first_blend":
         artificial_price = float(np.max(price))
-        artificial_resilience_revenue = pulp.lpSum(artificial_price * v[t] for t in range(T))
+        artificial_resilience_revenue = pulp.lpSum(artificial_price * v[t] * dt for t in range(T))
 
     # Set objective based on mode
     if mode == "blend":
@@ -164,8 +201,23 @@ def run_lp(
         for t in range(T):
             prob += v[t] == load.iloc[t]
         prob += grid_revenue - total_gas_cost
+    elif mode == "cost_min_gridoff":
+        # Cost-optimal dispatch. v[t] + unserved[t] = load[t] is added in the constraints loop
+        # so the optimizer trades the marginal cost of generation (gas, degradation) against
+        # the value of lost load (VOLL). When grid_allowed is True we subtract merchant revenue
+        # so the screener can also evaluate hybrids that sell to the grid; the term collapses
+        # to zero when imports/exports are pinned by POI=0.
+        prob += (
+            unserved_cost_term
+            + gas_energy_cost
+            + gas_no_load_cost_term
+            + gas_start_cost
+            + bess_deg_cost_term
+            + co2_cost_term
+            - grid_revenue
+        )
     else:
-        raise ValueError("mode must be blend/revenue/resilience/resilience_first_blend/grid_on_max_revenue")
+        raise ValueError("mode must be blend/revenue/resilience/resilience_first_blend/grid_on_max_revenue/cost_min_gridoff")
 
     # ── Constraints ──────────────────────────────────────────────
     for t in range(T):
@@ -181,8 +233,9 @@ def run_lp(
                 prob += gas_on[t] == gas_start[t] - gas_stop[t]
             else:
                 prob += gas_on[t] - gas_on[t - 1] == gas_start[t] - gas_stop[t]
-                prob += gas_gen[t] - gas_gen[t - 1] <= float(cfg.gas_ramp_up_mw_per_h)
-                prob += gas_gen[t - 1] - gas_gen[t] <= float(cfg.gas_ramp_down_mw_per_h)
+                # Ramp limits scale with the time step (MW/h * h_per_interval).
+                prob += gas_gen[t] - gas_gen[t - 1] <= float(cfg.gas_ramp_up_mw_per_h) * dt
+                prob += gas_gen[t - 1] - gas_gen[t] <= float(cfg.gas_ramp_down_mw_per_h) * dt
         else:
             # Non-dispatchable gas: must-run style.
             # When gas_enabled and a static pmax is set, honor it instead of
@@ -201,35 +254,45 @@ def run_lp(
                 gas_fixed = float(natgas_profile.iloc[t])
             prob += gas_gen[t] == gas_fixed
 
-        # System power balance
+        # System power balance (per-interval; instantaneous power balance is dt-invariant)
         prob += renewable_gen.iloc[t] + gas_gen[t] + d1[t] + d2[t] + gi[t] == v[t] + c1[t] + c2[t] + ge[t] + cl[t]
-        prob += v[t] <= load.iloc[t]  # Cannot serve more than load
-        # POI net flow constraint
-        prob += ge[t] - gi[t] <= POI
-        prob += ge[t] - gi[t] >= -POI
-        # Battery 1 SOC
-        if t == 0:
-            prob += s1[t] == c1[t]*eta1 - d1[t]
-            prob += s2[t] == c2[t]*eta2 - d2[t]
+        # Load served + unserved == load (cost_min_gridoff uses unserved as a slack with VOLL price;
+        # other modes effectively pin unserved=0 because there is no incentive to leave load unserved).
+        if mode == "cost_min_gridoff":
+            prob += v[t] + unserved[t] == load.iloc[t]
         else:
-            prob += s1[t] == s1[t-1] + c1[t]*eta1 - d1[t]
-            prob += s2[t] == s2[t-1] + c2[t]*eta2 - d2[t]
+            prob += v[t] <= load.iloc[t]
+            prob += unserved[t] == load.iloc[t] - v[t]
+        # POI net flow constraint
+        prob += ge[t] - gi[t] <= POI_local
+        prob += ge[t] - gi[t] >= -POI_local
+        # Battery 1 SOC (energy = power * dt; eta applied to charging energy)
+        if t == 0:
+            prob += s1[t] == (c1[t] * eta1 - d1[t]) * dt
+            prob += s2[t] == (c2[t] * eta2 - d2[t]) * dt
+        else:
+            prob += s1[t] == s1[t-1] + (c1[t] * eta1 - d1[t]) * dt
+            prob += s2[t] == s2[t-1] + (c2[t] * eta2 - d2[t]) * dt
         # SOC bounds (redundant with variable bounds, but explicit)
         prob += s1[t] >= 0
         prob += s1[t] <= Emax1
         prob += s2[t] >= 0
         prob += s2[t] <= Emax2
-        # Discharge cannot exceed available SOC
+        # Discharge cannot exceed available SOC for this interval (energy conservation: d*dt <= soc_prev)
         if t == 0:
-            prob += d1[t] <= 0.5 * Emax1
-            prob += d2[t] <= 0.5 * Emax2
+            prob += d1[t] * dt <= 0.5 * Emax1
+            prob += d2[t] * dt <= 0.5 * Emax2
         else:
-            prob += d1[t] <= s1[t-1]
-            prob += d2[t] <= s2[t-1]
+            prob += d1[t] * dt <= s1[t-1]
+            prob += d2[t] * dt <= s2[t-1]
 
     if gas_dispatchable:
-        min_up = int(max(0, cfg.gas_min_up_h))
-        min_down = int(max(0, cfg.gas_min_down_h))
+        # Convert hour-based min up/down to interval count via dt.
+        # ceil() makes the constraint slightly stricter at sub-hourly resolution, which is the safe direction.
+        min_up_h = float(max(0.0, cfg.gas_min_up_h))
+        min_down_h = float(max(0.0, cfg.gas_min_down_h))
+        min_up = int(np.ceil(min_up_h / dt)) if min_up_h > 0 else 0
+        min_down = int(np.ceil(min_down_h / dt)) if min_down_h > 0 else 0
         for t in range(T):
             if min_up > 0:
                 start_ix = max(0, t - min_up + 1)
@@ -239,15 +302,18 @@ def run_lp(
                 prob += pulp.lpSum(gas_stop[k] for k in range(start_ix, t + 1)) <= 1 - gas_on[t]
 
     if min_served_mwh is not None:
-        prob += pulp.lpSum(v[t] for t in range(T)) >= float(min_served_mwh)
+        prob += pulp.lpSum(v[t] * dt for t in range(T)) >= float(min_served_mwh)
 
     # ── Solve LP/MILP ────────────────────────────────────────────
-    solved_with_relaxation = False
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
-    if pulp.LpStatus[prob.status] != "Optimal" and gas_dispatchable:
-        # Safe fallback: LP relaxation keeps app usable if MILP is hard/infeasible.
+    solved_with_relaxation = bool(relax_uc)
+    if relax_uc:
         prob.solve(pulp.PULP_CBC_CMD(msg=False, mip=False))
-        solved_with_relaxation = pulp.LpStatus[prob.status] == "Optimal"
+    else:
+        prob.solve(pulp.PULP_CBC_CMD(msg=False))
+        if pulp.LpStatus[prob.status] != "Optimal" and gas_dispatchable:
+            # Safe fallback: LP relaxation keeps app usable if MILP is hard/infeasible.
+            prob.solve(pulp.PULP_CBC_CMD(msg=False, mip=False))
+            solved_with_relaxation = pulp.LpStatus[prob.status] == "Optimal"
     if pulp.LpStatus[prob.status] != "Optimal":
         raise RuntimeError(f"Solver failed: {pulp.LpStatus[prob.status]}")
 
@@ -282,6 +348,7 @@ def run_lp(
     res["grid_exp"]   = arr(ge)
     res["clipped"]    = arr(cl)
     res["gas_gen"] = gas_gen_arr
+    res["unserved"] = arr(unserved)
     if gas_dispatchable:
         res["gas_on"] = arr(gas_on)
         res["gas_start"] = arr(gas_start)
@@ -294,7 +361,13 @@ def run_lp(
             starts[1:] = ((gas_gen_arr[1:] > 1e-6) & (gas_gen_arr[:-1] <= 1e-6)).astype(float)
         res["gas_start"] = starts
         res["gas_stop"] = 0.0
-    per_step_cost = gas_gen_arr * gas_var_cost + res["gas_start"].to_numpy(dtype=float) * float(cfg.gas_startup_cost_usd)
+    # Energy-weighted gas cost (gas_var_cost is $/MWh, gas_gen is MW, so multiply by dt to get $).
+    # Startup cost is a per-event $ amount and doesn't scale with dt.
+    per_step_cost = (
+        gas_gen_arr * gas_var_cost * dt
+        + res["gas_start"].to_numpy(dtype=float) * float(cfg.gas_startup_cost_usd)
+        + res["gas_on"].to_numpy(dtype=float) * gas_no_load_cost * dt
+    )
     res["gas_cost_$"] = per_step_cost
     # SOC
     res["soc1"] = arr(s1)
@@ -310,21 +383,24 @@ def run_lp(
         res[col] = pd.to_numeric(res[col], errors='coerce')
 
     # ── Metrics calculation ────────────────────────────────────
-    total_load = float(res["load"].sum(skipna=True))
-    served = float(res["serve"].sum(skipna=True))
+    # Energy = power * dt (MW * h = MWh). All metrics use dt for sub-hourly correctness.
+    total_load = float(res["load"].sum(skipna=True)) * dt
+    served = float(res["serve"].sum(skipna=True)) * dt
+    unserved_arr = res["unserved"].to_numpy(dtype=float)
+    unserved_mwh = float(unserved_arr.sum()) * dt
     grid_exp = res["grid_exp"].to_numpy(dtype=float)
     grid_imp = res["grid_imp"].to_numpy(dtype=float)
     price_arr = res["price"].to_numpy(dtype=float)
-    revenue_tot = ((grid_exp - grid_imp) * price_arr).sum()  # $ (for hourly data: MW * $/MWh * 1h = $)
-    total_wind = float(wind.sum(skipna=True))
-    total_solar = float(solar.sum(skipna=True))
-    total_natgas = float(res["gas_gen"].sum(skipna=True))
+    revenue_tot = ((grid_exp - grid_imp) * price_arr).sum() * dt  # $ (MW * $/MWh * h = $)
+    total_wind = float(wind.sum(skipna=True)) * dt
+    total_solar = float(solar.sum(skipna=True)) * dt
+    total_natgas = float(res["gas_gen"].sum(skipna=True)) * dt
     total_gen = total_wind + total_solar + total_natgas
     green_gen_over_load_pct = (total_gen / total_load * 100) if total_load > 0 else 0.0
     resilience_pct = round(served / total_load * 100, 2) if total_load > 0 else 0.0
-    total_charge = float(res["charge"].sum(skipna=True)) if "charge" in res else 0.0
-    total_clip = float(res["clipped"].sum(skipna=True)) if "clipped" in res else 0.0
-    total_gen_mwh = float(res["generation"].sum(skipna=True)) if "generation" in res else 0.0
+    total_charge = float(res["charge"].sum(skipna=True)) * dt if "charge" in res else 0.0
+    total_clip = float(res["clipped"].sum(skipna=True)) * dt if "clipped" in res else 0.0
+    total_gen_mwh = float(res["generation"].sum(skipna=True)) * dt if "generation" in res else 0.0
     
     capex = (
         cfg.capex_power_usd_per_kw  * cfg.battery_power_mw   * 1000 +
@@ -338,12 +414,12 @@ def run_lp(
         clipped_arr = res["clipped"].to_numpy(dtype=float)
         price_arr = res["price"].to_numpy(dtype=float)
         if len(clipped_arr) == len(price_arr):
-            clipped_revenue = float((clipped_arr * price_arr).sum())  # $ (for hourly data: MW * $/MWh * 1h = $)
+            clipped_revenue = float((clipped_arr * price_arr).sum()) * dt  # $ (MW * $/MWh * h = $)
         else:
             clipped_revenue = None
-    # Calculate number of cycles for each battery
-    discharge1_sum = float(res["discharge1"].to_numpy(dtype=float).sum()) if "discharge1" in res else 0.0
-    discharge2_sum = float(res["discharge2"].to_numpy(dtype=float).sum()) if "discharge2" in res else 0.0
+    # Calculate number of cycles for each battery (energy throughput / capacity)
+    discharge1_sum = float(res["discharge1"].to_numpy(dtype=float).sum()) * dt if "discharge1" in res else 0.0
+    discharge2_sum = float(res["discharge2"].to_numpy(dtype=float).sum()) * dt if "discharge2" in res else 0.0
     cycles1 = discharge1_sum / float(cfg.battery_energy_mwh) if cfg.battery_energy_mwh > 0 else 0.0
     cycles2 = discharge2_sum / float(cfg.battery2_energy_mwh) if cfg.battery2_energy_mwh > 0 else 0.0
     charge_arr = res["charge"].to_numpy(dtype=float) if "charge" in res else np.zeros(len(res))
@@ -351,24 +427,38 @@ def run_lp(
     gen_arr = res["generation"].to_numpy(dtype=float) if "generation" in res else np.zeros(len(res))
     grid_imp_arr = res["grid_imp"].to_numpy(dtype=float)
     grid_exp_arr = res["grid_exp"].to_numpy(dtype=float)
+    discharge1_arr = res["discharge1"].to_numpy(dtype=float) if "discharge1" in res else np.zeros(len(res))
+    discharge2_arr = res["discharge2"].to_numpy(dtype=float) if "discharge2" in res else np.zeros(len(res))
     gas_start_count = int(np.round(res["gas_start"].to_numpy(dtype=float).sum())) if "gas_start" in res else 0
     gas_cap_ref = float(cfg.gas_pmax_mw) if cfg.gas_pmax_mw > 0 else float(gas_cap_series.max()) if len(gas_cap_series) else 0.0
-    gas_cf_pct = (100.0 * total_natgas / (gas_cap_ref * T)) if gas_cap_ref > 0 and T > 0 else 0.0
+    horizon_hours = float(T) * dt
+    gas_cf_pct = (100.0 * total_natgas / (gas_cap_ref * horizon_hours)) if gas_cap_ref > 0 and horizon_hours > 0 else 0.0
     renewable_gen_over_load_pct = (
         ((total_wind + total_solar) / total_load * 100.0) if total_load > 0 else 0.0
     )
+    # Cost decomposition (always computed; zero terms are zero rather than missing).
+    cost_unserved = voll * unserved_mwh
+    cost_gas_var = gas_var_cost * total_natgas
+    cost_gas_no_load = gas_no_load_cost * float(res["gas_on"].to_numpy(dtype=float).sum()) * dt
+    cost_gas_startup = float(cfg.gas_startup_cost_usd) * gas_start_count
+    cost_bess_deg = bess_deg_cost * (discharge1_sum + discharge2_sum)
+    co2_tons_total = co2_per_mwh * total_natgas
+    cost_carbon = carbon_price * co2_tons_total
+    total_op_cost = cost_unserved + cost_gas_var + cost_gas_no_load + cost_gas_startup + cost_bess_deg + cost_carbon
+
     mets = {
         "firmness (%)": round(resilience_pct, 2),
         "TotalGen/TotalLoad": round(float(green_gen_over_load_pct), 2),
         "renewable_gen_over_load_%": round(float(renewable_gen_over_load_pct), 2),
         "Merchant Revenue/Cost": round(float(revenue_tot - per_step_cost.sum()), 2),
-        "total_charge_mwh": round(float(charge_arr.sum()), 2),
-        "total_clip_mwh": round(float(clipped_arr.sum()), 2),
-        "total_gen_mwh": round(float(gen_arr.sum()), 2),
+        "total_charge_mwh": round(float(charge_arr.sum()) * dt, 2),
+        "total_clip_mwh": round(float(clipped_arr.sum()) * dt, 2),
+        "total_gen_mwh": round(float(gen_arr.sum()) * dt, 2),
         "total_load_mwh": round(total_load, 2),
         "total_served_mwh": round(served, 2),
-        "grid_imp_mwh":   round(float(grid_imp_arr.sum()), 2),
-        "grid_exp_mwh":   round(float(grid_exp_arr.sum()), 2),
+        "unserved_energy_mwh": round(unserved_mwh, 4),
+        "grid_imp_mwh":   round(float(grid_imp_arr.sum()) * dt, 2),
+        "grid_exp_mwh":   round(float(grid_exp_arr.sum()) * dt, 2),
         "cycles_battery1": round(float(cycles1), 2),
         "cycles_battery2": round(float(cycles2), 2),
         "total_wind_mwh": round(total_wind, 2),
@@ -377,6 +467,19 @@ def run_lp(
         "natgas_start_count": gas_start_count,
         "natgas_capacity_factor_%": round(float(gas_cf_pct), 2),
         "natgas_total_cost_$": round(float(per_step_cost.sum()), 2),
+        "co2_tons": round(co2_tons_total, 3),
+        "total_operating_cost_usd": round(total_op_cost, 2),
+        "cost_of_unserved_usd": round(cost_unserved, 2),
+        "cost_breakdown": {
+            "unserved_voll": round(cost_unserved, 2),
+            "gas_variable": round(cost_gas_var, 2),
+            "gas_no_load": round(cost_gas_no_load, 2),
+            "gas_startup": round(cost_gas_startup, 2),
+            "bess_degradation": round(cost_bess_deg, 2),
+            "carbon": round(cost_carbon, 2),
+        },
+        "horizon_hours": round(horizon_hours, 4),
+        "dt_hours": dt,
         "solver_relaxed_lp": bool(solved_with_relaxation),
     }
     if clipped_revenue is not None:
@@ -404,6 +507,7 @@ def run_lp(
         if (res["grid_imp"].abs().max() > 1e-6) or (res["grid_exp"].abs().max() > 1e-6):
             sanity_errors.append("Grid import/export nonzero when grid is off")
     # 5. serve never exceeds cumulative generation (over period)
+    # Use power sums rather than energy here; the inequality is dt-invariant since both sides scale equally.
     if not grid_allowed and mode != "grid_on_max_revenue":
         if res["serve"].sum() > (wind.clip(lower=0).sum() + solar.clip(lower=0).sum() + res["gas_gen"].clip(lower=0).sum()) + 1e-6:
             sanity_errors.append("Total served exceeds total available generation")

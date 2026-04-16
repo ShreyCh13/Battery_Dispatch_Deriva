@@ -1,0 +1,135 @@
+{
+  "name": "Commercial C&I",
+  "description": "Small commercial facility. Lower VOLL (some load is deferrable). Renewables + BESS focus.",
+  "run_config": {
+    "path": "template_may2015.csv",
+    "sheet_name": "Combined",
+    "start_date": "2015-05-01",
+    "end_date": "2015-05-31",
+    "load_mw": 50.0,
+    "load_std": 15.0,
+    "load_type": "16-7",
+    "battery_power_mw": 20.0,
+    "battery_duration_h": 4.0,
+    "battery_count": 1,
+    "rte": 0.86,
+    "battery2_power_mw": 0.0,
+    "battery2_duration_h": 0.0,
+    "battery2_rte": 0.86,
+    "poi_limit_mw": 50.0,
+    "value_per_mwh": 100.0,
+    "market_price_col": "Market Price ($/MWh)",
+    "capex_power_usd_per_kw": 200.0,
+    "capex_energy_usd_per_kwh": 150.0,
+    "discount_years": 20,
+    "gas_enabled": false,
+    "gas_dispatchable": false,
+    "gas_cost_mode": "simple",
+    "gas_availability_col": "NatGas (MW)",
+    "gas_use_profile_as_cap": false,
+    "gas_pmax_mw": 0.0,
+    "gas_pmin_mw": 0.0,
+    "gas_ramp_up_mw_per_h": 1000000.0,
+    "gas_ramp_down_mw_per_h": 1000000.0,
+    "gas_min_up_h": 0,
+    "gas_min_down_h": 0,
+    "gas_startup_cost_usd": 0.0,
+    "gas_var_cost_usd_per_mwh": 0.0,
+    "gas_heat_rate_mmbtu_per_mwh": 7.5,
+    "gas_fuel_price_usd_per_mmbtu": 3.5,
+    "gas_vom_usd_per_mwh": 0.0,
+    "voll_usd_per_mwh": 2000.0,
+    "gas_no_load_cost_usd_per_h": 0.0,
+    "bess_deg_cost_usd_per_mwh": 3.0,
+    "gas_co2_tons_per_mmbtu": 0.05306,
+    "carbon_price_usd_per_ton": 0.0,
+    "dt_hours": 1.0
+  },
+  "econ": {
+    "solar": {
+      "capex_usd_per_kw": 1000.0,
+      "capex_usd_per_kwh": 0.0,
+      "fixed_om_usd_per_kw_yr": 15.0,
+      "life_years": 30.0,
+      "discount_rate": 0.07
+    },
+    "wind": {
+      "capex_usd_per_kw": 1500.0,
+      "capex_usd_per_kwh": 0.0,
+      "fixed_om_usd_per_kw_yr": 35.0,
+      "life_years": 25.0,
+      "discount_rate": 0.07
+    },
+    "bess": {
+      "capex_usd_per_kw": 300.0,
+      "capex_usd_per_kwh": 200.0,
+      "fixed_om_usd_per_kw_yr": 10.0,
+      "life_years": 15.0,
+      "discount_rate": 0.07
+    },
+    "gas": {
+      "capex_usd_per_kw": 800.0,
+      "capex_usd_per_kwh": 0.0,
+      "fixed_om_usd_per_kw_yr": 20.0,
+      "life_years": 25.0,
+      "discount_rate": 0.07
+    },
+    "carbon_price_usd_per_ton": 0.0,
+    "bess_as_revenue_usd_per_kw_yr": 0.0,
+    "period_weights": null,
+    "weather_years": null
+  },
+  "screening_ranges": {
+    "solar": {
+      "name": "solar",
+      "mode": "absolute",
+      "values": [
+        20.0,
+        50.0,
+        80.0
+      ],
+      "reference_mw": 100.0
+    },
+    "wind": {
+      "name": "wind",
+      "mode": "pinned",
+      "values": [
+        0.0
+      ],
+      "reference_mw": 148.0
+    },
+    "bess_power": {
+      "name": "bess_power",
+      "mode": "absolute",
+      "values": [
+        10.0,
+        20.0,
+        40.0
+      ],
+      "reference_mw": null
+    },
+    "bess_duration": {
+      "name": "bess_duration",
+      "mode": "absolute",
+      "values": [
+        2.0,
+        4.0
+      ],
+      "reference_mw": null
+    },
+    "gas": {
+      "name": "gas",
+      "mode": "absolute",
+      "values": [
+        0.0,
+        10.0,
+        25.0
+      ],
+      "reference_mw": null
+    }
+  },
+  "reliability_target_pct": 95.0,
+  "grid_allowed": false,
+  "weather_years": null,
+  "period_weights": null
+}

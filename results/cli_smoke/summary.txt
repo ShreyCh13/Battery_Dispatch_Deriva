@@ -1,0 +1,17 @@
+Scenario: Commercial C&I
+Description: Small commercial facility. Lower VOLL (some load is deferrable). Renewables + BESS focus.
+Data: template_may2015.csv
+Reliability target: 95.0%
+Grid allowed: False
+Grid size tested: 54 configurations
+
+Recommendation:
+  Cheapest configuration meeting 95.0% reliability: $28,326,567/yr at 97.76% firmness.
+
+  Solar: 80.0 MW
+  Wind:  0.0 MW
+  BESS:  40.0 MW / 4.0 h  (160.0 MWh)
+  Gas:   25.0 MW
+  Firmness: 97.76%
+  Total annual cost: $28,326,567/yr
+  CO2 tons (horizon): 7401.9

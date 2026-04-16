@@ -78,8 +78,12 @@ def get_date_safe(val):
         return datetime.date(2015, 1, 1)
 
 # ── Page set-up ───────────────────────────────────────────────
-st.set_page_config(page_title="Deriva Storage Optimizer", layout="wide")
-st.title("Deriva Storage Optimizer")
+st.set_page_config(page_title="Dispatch Analysis", layout="wide")
+st.title("Dispatch Analysis")
+st.caption(
+    "Simulate a specific resource configuration over a date window. "
+    "Use the **Configuration Recommendation** page (sidebar) to have the tool recommend a mix."
+)
 
 # ── Sidebar: Data source ─────────────────────────────────────
 st.sidebar.header("1 · Data source (upload or synthetic)")
@@ -366,28 +370,84 @@ with st.sidebar.expander("3b · Natural Gas Resource (optional)", expanded=False
 
 # ── Sidebar: Mode selection ─────────────────────────────────────────
 # One Mode selector that maps 1:1 to real behaviour. No decorative presets.
+# Gas Sizing Recommendation has been moved to the Configuration Recommendation page.
 MODE_OPTIONS = [
     "Grid-Off Firmness",
     "Grid-On Revenue",
     "Fixed Schedule",
-    "Gas Sizing Recommendation",
 ]
 run_mode = st.sidebar.radio(
     "Mode",
     MODE_OPTIONS,
     index=0,
     help=(
-        "Grid-Off Firmness: maximise load served with no grid.\n"
+        "Grid-Off Firmness: minimise cost of unserved load + gas + degradation (no grid).\n"
         "Grid-On Revenue: serve 100% of load, maximise net merchant revenue.\n"
-        "Fixed Schedule: simulate a user-supplied charge/discharge schedule.\n"
-        "Gas Sizing Recommendation: sweep gas capacities and recommend a size."
+        "Fixed Schedule: simulate a user-supplied charge/discharge schedule.\n\n"
+        "For a full multi-resource sizing study use the Configuration Recommendation page."
     ),
 )
+if "Gas Sizing" in run_mode or run_mode == "Gas Sizing Recommendation":
+    st.sidebar.info(
+        "Gas sizing has moved to the **Configuration Recommendation** page. "
+        "That page sweeps solar / wind / BESS / gas together."
+    )
+
+# ── Grid-Off Firmness economics (reliability tier + advanced hatch) ──
+# Only shown when Grid-Off Firmness is the selected mode.
+reliability_tier = "High (VOLL $5,000/MWh)"
+use_legacy_objective = False
+voll_user = 5000.0
+gas_no_load_user = 0.0
+bess_deg_user = 0.0
+carbon_price_user = 0.0
+if run_mode == "Grid-Off Firmness":
+    with st.sidebar.expander("Economics (grid-off)", expanded=False):
+        RELIABILITY_TIERS = {
+            "Critical (VOLL $10,000/MWh)": 10_000.0,
+            "High (VOLL $5,000/MWh)": 5_000.0,
+            "Commercial (VOLL $2,000/MWh)": 2_000.0,
+            "Best-effort (VOLL $500/MWh)": 500.0,
+            "Custom": -1.0,
+        }
+        reliability_tier = st.selectbox(
+            "Reliability tier",
+            list(RELIABILITY_TIERS.keys()),
+            index=1,
+            help=(
+                "VOLL (Value of Lost Load) is how much one MWh of unserved load is "
+                "worth avoiding. Higher VOLL means the solver will burn more gas / cycle "
+                "batteries harder to keep load served."
+            ),
+        )
+        if RELIABILITY_TIERS[reliability_tier] > 0:
+            voll_user = float(RELIABILITY_TIERS[reliability_tier])
+        else:
+            voll_user = float(st.number_input("Custom VOLL ($/MWh)", 0.0, 100_000.0, 5000.0, 100.0))
+        st.caption("Advanced")
+        gas_no_load_user = float(st.number_input(
+            "Gas no-load cost ($/h)", 0.0, 100_000.0, 0.0, 25.0,
+            help="Extra $/h the solver pays for every hour the gas is *committed*, even at zero output. "
+                 "Set 0 to keep legacy behaviour; a realistic value is ~8-12% of full-load fuel cost."
+        ))
+        bess_deg_user = float(st.number_input(
+            "BESS degradation cost ($/MWh discharged)", 0.0, 200.0, 0.0, 1.0,
+            help="Per-MWh penalty on battery throughput to represent calendar/cycle degradation."
+        ))
+        carbon_price_user = float(st.number_input(
+            "Carbon price ($/ton CO2)", 0.0, 1000.0, 0.0, 5.0,
+            help="Optional carbon cost applied to gas emissions. Zero preserves legacy numbers."
+        ))
+        use_legacy_objective = st.checkbox(
+            "Use legacy objective (max served, no cost)", value=False,
+            help="Parity escape hatch: reproduces the old 'resilience' mode exactly. "
+                 "Disables VOLL / no-load / degradation / carbon."
+        )
 
 # Derive legacy flags from the single Mode control so the rest of the app
 # keeps working without a larger rewrite.
 mode = "Fixed Schedule" if run_mode == "Fixed Schedule" else "Optimized Dispatch"
-sizing_toggle = (run_mode == "Gas Sizing Recommendation")
+sizing_toggle = False  # Retired from this page; see Configuration Recommendation page.
 grid_on = (run_mode == "Grid-On Revenue")
 
 st.sidebar.header("4 · POI / Grid")
@@ -397,9 +457,13 @@ if mode == "Optimized Dispatch":
     if run_mode == "Grid-On Revenue":
         st.sidebar.info("**Objective:** Maximise net revenue (all load is served)")
     elif run_mode == "Grid-Off Firmness":
-        st.sidebar.info("**Objective:** Maximise load served (Firmness)")
-    else:
-        st.sidebar.info("**Objective:** Sweep gas capacity, pick recommended size")
+        if use_legacy_objective:
+            st.sidebar.info("**Objective:** Maximise load served (legacy resilience mode)")
+        else:
+            st.sidebar.info(
+                f"**Objective:** Minimise cost = VOLL × unserved + gas + degradation"
+                f"  \n(VOLL = ${voll_user:,.0f}/MWh)"
+            )
 
     tradeoff_toggle = False
     if run_mode == "Grid-Off Firmness":
@@ -409,24 +473,11 @@ if mode == "Optimized Dispatch":
             help="Explore the trade-off between firmness and merchant revenue/cost."
         )
 
-    # Sizing inputs only shown in sizing mode. Enabling gas+dispatchable is
-    # handled internally by the sizing engine, so we don't re-gate the UI.
-    if sizing_toggle:
-        st.sidebar.header("5 · Sizing sweep")
-        sizing_grid_on = st.sidebar.checkbox(
-            "Allow grid during sweep",
-            value=False,
-            help="If on, sweep runs use Grid-On Revenue; otherwise Grid-Off Firmness.",
-        )
-        firmness_target_pct = st.sidebar.slider("Firmness target (%)", 50, 100, 95, 1)
-        default_max_gas = max(25.0, gas_pmax_mw if gas_pmax_mw > 0 else 250.0)
-        sizing_max_gas_mw = st.sidebar.number_input("Max gas capacity for sweep (MW)", 0.0, 5000.0, default_max_gas, 5.0)
-        sizing_step_mw = st.sidebar.number_input("Sweep step (MW)", 1.0, 1000.0, 25.0, 1.0)
-    else:
-        sizing_grid_on = False
-        firmness_target_pct = 95
-        sizing_max_gas_mw = 0.0
-        sizing_step_mw = 25.0
+    # Retired: Gas Sizing Recommendation moved to its own page.
+    sizing_grid_on = False
+    firmness_target_pct = 95
+    sizing_max_gas_mw = 0.0
+    sizing_step_mw = 25.0
 
     run = st.sidebar.button("🚀 Run")
 else:
@@ -462,6 +513,21 @@ else:
 
 # --- Always build run_cfg before any data loading or simulation ---
 from pathlib import Path
+
+def _econ_kwargs() -> dict:
+    """Return the optional economics fields wired into every RunConfig on this page.
+
+    These are zero-impact when the user hasn't opened the 'Economics' expander
+    (defaults preserve existing behaviour) and only take effect in the new
+    Grid-Off cost-min path.
+    """
+    return {
+        "voll_usd_per_mwh": voll_user,
+        "gas_no_load_cost_usd_per_h": gas_no_load_user,
+        "bess_deg_cost_usd_per_mwh": bess_deg_user,
+        "carbon_price_usd_per_ton": carbon_price_user,
+    }
+
 run_cfg = None
 if mode == "Optimized Dispatch":
     poi_limit_val = poi_limit if poi_limit is not None else 250.0
@@ -496,6 +562,7 @@ if mode == "Optimized Dispatch":
         gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
         gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
         gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
+        **_econ_kwargs(),
     )
 else:
     # Fixed Schedule mode: always use a valid float for poi_limit_mw
@@ -530,6 +597,7 @@ else:
         gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
         gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
         gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
+        **_econ_kwargs(),
     )
 
 # Always build config and load data before main workflow
@@ -583,6 +651,7 @@ try:
                 gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
                 gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
                 gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
+                **_econ_kwargs(),
             )
             from dispatch_core.profiles import generate
             valid_types = ["24-7", "16-7", "random", "random_16-7"]
@@ -623,6 +692,7 @@ try:
                 gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
                 gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
                 gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
+                **_econ_kwargs(),
             )
         # === FIX: Use user_df directly for both uploaded files and template ===
         if user_data_source in ["uploaded", "template"]:
@@ -679,47 +749,10 @@ if run and df is not None and run_cfg is not None:
         gas_heat_rate_mmbtu_per_mwh = gas_heat_rate_mmbtu_per_mwh,
         gas_fuel_price_usd_per_mmbtu = gas_fuel_price_usd_per_mmbtu,
         gas_vom_usd_per_mwh = gas_vom_usd_per_mwh,
+        **_econ_kwargs(),
     )
 
-    if sizing_toggle:
-        st.subheader("Natural Gas Capacity Recommendation")
-        if not gas_enabled:
-            st.warning(
-                "Gas is disabled. Enable 'Natural Gas Resource' in section 3b, "
-                "or Sizing mode will just sweep capacities for a resource you never enable."
-            )
-        try:
-            start_time = time.time()
-            cap_values = np.arange(0.0, float(sizing_max_gas_mw) + float(sizing_step_mw), float(sizing_step_mw))
-            sweep_df = sizing.run_gas_capacity_sweep(
-                df,
-                run_cfg,
-                cap_values.tolist(),
-                firmness_target_pct=float(firmness_target_pct),
-                grid_allowed=bool(sizing_grid_on),
-            )
-            rec = sizing.recommend_gas_capacity(
-                sweep_df,
-                firmness_target_pct=float(firmness_target_pct),
-            )
-            elapsed = time.time() - start_time
-            st.markdown(f"**Sweep runtime:** {elapsed:.2f} s over {len(sweep_df)} capacities")
-            st.markdown(f"**Recommended gas capacity:** {rec['recommended_capacity_mw']:.1f} MW")
-            st.markdown(f"**Reason:** {rec['reason']}")
-            st.markdown(f"**Economic knee candidate:** {rec['knee_capacity_mw']:.1f} MW")
-            st.dataframe(sweep_df, use_container_width=True)
-            st.line_chart(
-                sweep_df.set_index("gas_capacity_mw")[["firmness_pct", "merchant_revenue_cost_usd"]],
-                use_container_width=True,
-            )
-            st.download_button(
-                "⬇️ Capacity sweep CSV",
-                sweep_df.to_csv(index=False).encode(),
-                f"gas_sizing_sweep_{str(d_from)}_{str(d_to)}.csv",
-            )
-        except Exception as e:
-            st.error(f"Capacity sweep failed: {e}")
-    elif grid_on:
+    if grid_on:
         spill_label = "Clipped Energy"  # label for grid-on case
         st.subheader("Grid ON: Maximize Revenue with 100% Load Served")
         start_time = time.time()
@@ -783,13 +816,22 @@ if run and df is not None and run_cfg is not None:
         st.download_button("⬇️ Everything (ZIP)", buf.getvalue(), "dispatch_results.zip")
     else:
         spill_label = "Spilled Energy"  # label for grid-off case
-        st.subheader("Firmness Mode: Maximize Load Served")
+        active_mode = "resilience" if use_legacy_objective else "cost_min_gridoff"
+        if active_mode == "cost_min_gridoff":
+            st.subheader("Grid-Off: Cost-Optimal Dispatch")
+            st.caption(
+                f"Minimising  VOLL × unserved  +  gas variable + gas no-load + gas startup  "
+                f"+  BESS degradation  +  carbon.  VOLL = ${voll_user:,.0f}/MWh"
+            )
+        else:
+            st.subheader("Firmness Mode: Maximize Load Served (legacy)")
+            st.caption("Legacy resilience objective selected in the Economics expander.")
         start_time = time.time()
         try:
             res, mets = optimize.run_lp(
                 df,
                 run_cfg,
-                mode          = "resilience",
+                mode          = active_mode,
                 blend_lambda  = 1.0,
                 grid_allowed  = grid_on
             )
@@ -798,6 +840,25 @@ if run and df is not None and run_cfg is not None:
             st.stop()
         elapsed = time.time() - start_time
         st.markdown(f"**Optimization time:** {elapsed:.2f} seconds", unsafe_allow_html=True)
+
+        # Top-line KPI cards for the cost-min path.
+        if active_mode == "cost_min_gridoff":
+            c1_col, c2_col, c3_col, c4_col = st.columns(4)
+            c1_col.metric("Firmness", f"{float(mets.get('firmness (%)', 0.0)):.2f}%")
+            c2_col.metric("Unserved (MWh)", f"{float(mets.get('unserved_energy_mwh', 0.0)):.2f}")
+            c3_col.metric("Total op. cost ($)", f"{float(mets.get('total_operating_cost_usd', 0.0)):,.0f}")
+            c4_col.metric("CO2 (tons)", f"{float(mets.get('co2_tons', 0.0)):.1f}")
+            cb = mets.get("cost_breakdown", {}) or {}
+            if cb:
+                st.caption(
+                    "Cost breakdown ($): "
+                    f"unserved={cb.get('unserved_voll',0):,.0f} · "
+                    f"gas var={cb.get('gas_variable',0):,.0f} · "
+                    f"gas no-load={cb.get('gas_no_load',0):,.0f} · "
+                    f"gas startup={cb.get('gas_startup',0):,.0f} · "
+                    f"BESS deg={cb.get('bess_degradation',0):,.0f} · "
+                    f"carbon={cb.get('carbon',0):,.0f}"
+                )
         st.dataframe(pd.Series(mets).to_frame("Value").T, use_container_width=True)
         _gas_diagnostics_note(run_cfg, mets, df)
         st.subheader("Dispatch overview")

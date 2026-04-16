@@ -84,6 +84,23 @@ class RunConfig(BaseModel):
     gas_fuel_price_usd_per_mmbtu: float = 3.5
     gas_vom_usd_per_mwh: float = 0.0
 
+    # ── Cost-optimal dispatch / reliability economics ─────────
+    # Used by mode="cost_min_gridoff" and the screener. Defaults are zero-impact:
+    # voll high enough that load served behaves like the legacy resilience mode,
+    # but with no-load cost and degradation properly penalising idle commits.
+    voll_usd_per_mwh: float = 5000.0
+    gas_no_load_cost_usd_per_h: float = 0.0
+    bess_deg_cost_usd_per_mwh: float = 0.0
+
+    # ── Emissions (zero by default so existing numbers do not shift) ──
+    gas_co2_tons_per_mmbtu: float = 0.05306
+    carbon_price_usd_per_ton: float = 0.0
+
+    # ── Time-step (sub-hourly future-proofing; default 1.0 = current behaviour) ─
+    # When you upload 15-min or 5-min data later, set dt_hours=0.25 or 0.0833 and
+    # the engine rescales SOC, ramp limits, energy sums, UC timing automatically.
+    dt_hours: float = 1.0
+
     # Helper properties for battery energy (MWh)
     @property
     def battery_energy_mwh(self) -> float:
@@ -106,3 +123,42 @@ class RunConfig(BaseModel):
                 + self.gas_vom_usd_per_mwh
             )
         return self.gas_var_cost_usd_per_mwh
+
+    @property
+    def effective_no_load_cost_usd_per_h(self) -> float:
+        """No-load fuel cost per hour of commitment.
+
+        Returns the user-set value as-is. Zero by default so legacy modes
+        (resilience, grid_on_max_revenue, blend, ...) are not affected.
+
+        For the cost-optimal screening / cost_min_gridoff flow, callers should
+        pre-compute a screening-grade default via :meth:`suggest_no_load_cost`
+        and set ``gas_no_load_cost_usd_per_h`` explicitly.
+        """
+        if not self.gas_enabled:
+            return 0.0
+        return float(self.gas_no_load_cost_usd_per_h)
+
+    def suggest_no_load_cost(self) -> float:
+        """Industry-standard screening default for the no-load cost.
+
+        Conventional gas turbine input/output curves consume ~8-12% of full-load
+        fuel at idle. We pick 10% of full-load fuel cost when the advanced cost
+        mode is in use (heat-rate * fuel price); otherwise 10% of the simple
+        var cost as a coarse fallback. Returns 0 if gas is disabled.
+        """
+        if not self.gas_enabled:
+            return 0.0
+        if self.gas_cost_mode == "advanced":
+            full_load_fuel = (
+                self.gas_heat_rate_mmbtu_per_mwh * self.gas_fuel_price_usd_per_mmbtu
+            )
+            return 0.10 * full_load_fuel
+        return 0.10 * float(self.gas_var_cost_usd_per_mwh)
+
+    @property
+    def gas_co2_tons_per_mwh(self) -> float:
+        """CO2 tons emitted per MWh of gas generation (heat rate * emissions factor)."""
+        if not self.gas_enabled:
+            return 0.0
+        return float(self.gas_heat_rate_mmbtu_per_mwh) * float(self.gas_co2_tons_per_mmbtu)
