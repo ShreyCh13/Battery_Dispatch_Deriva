@@ -1,8 +1,8 @@
-streamlit
-pandas
-openpyxl
-pulp
-matplotlib
-plotly
-pydantic
-numpy
+streamlit>=1.32
+pandas>=2.0
+openpyxl>=3.1
+pulp>=2.7
+matplotlib>=3.7
+plotly>=5.18
+pydantic>=2.5
+numpy>=1.24

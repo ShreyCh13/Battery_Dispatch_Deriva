@@ -835,6 +835,26 @@ if run and df is not None and run_cfg is not None:
                 blend_lambda  = 1.0,
                 grid_allowed  = grid_on
             )
+        except ValueError as e:
+            # If the deployed optimiser doesn't know about cost_min_gridoff
+            # (stale bytecode / older build) fall back to the legacy
+            # resilience objective so the page still renders.
+            if "cost_min_gridoff" in active_mode and "mode must be" in str(e):
+                st.warning(
+                    "Cost-optimal objective not available in this build; "
+                    "falling back to legacy firmness (max load served)."
+                )
+                active_mode = "resilience"
+                res, mets = optimize.run_lp(
+                    df,
+                    run_cfg,
+                    mode          = "resilience",
+                    blend_lambda  = 1.0,
+                    grid_allowed  = grid_on
+                )
+            else:
+                st.error(f"⚠️ Optimiser crashed: {e}")
+                st.stop()
         except Exception as e:
             st.error(f"⚠️ Optimiser crashed: {e}")
             st.stop()
